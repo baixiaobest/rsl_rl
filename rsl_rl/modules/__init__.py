@@ -6,6 +6,7 @@
 """Definitions for neural-network components for RL-agents."""
 
 from .actor_critic import ActorCritic
+from .encoder_actor_critic import EncoderActorCritic
 from .actor_critic_recurrent import ActorCriticRecurrent
 from .normalizer import EmpiricalNormalization
 from .rnd import RandomNetworkDistillation
@@ -14,6 +15,7 @@ from .student_teacher_recurrent import StudentTeacherRecurrent
 
 __all__ = [
     "ActorCritic",
+    "EncoderActorCritic"
     "ActorCriticRecurrent",
     "EmpiricalNormalization",
     "RandomNetworkDistillation",

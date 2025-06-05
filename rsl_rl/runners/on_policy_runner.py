@@ -16,6 +16,7 @@ from rsl_rl.algorithms import PPO, Distillation
 from rsl_rl.env import VecEnv
 from rsl_rl.modules import (
     ActorCritic,
+    EncoderActorCritic,
     ActorCriticRecurrent,
     EmpiricalNormalization,
     StudentTeacher,
@@ -69,7 +70,7 @@ class OnPolicyRunner:
 
         # evaluate the policy class
         policy_class = eval(self.policy_cfg.pop("class_name"))
-        policy: ActorCritic | ActorCriticRecurrent | StudentTeacher | StudentTeacherRecurrent = policy_class(
+        policy: ActorCritic | EncoderActorCritic | ActorCriticRecurrent | StudentTeacher | StudentTeacherRecurrent = policy_class(
             num_obs, num_privileged_obs, self.env.num_actions, **self.policy_cfg
         ).to(self.device)
 
