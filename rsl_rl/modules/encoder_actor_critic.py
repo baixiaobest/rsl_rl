@@ -186,3 +186,29 @@ class EncoderActorCritic(nn.Module):
 
         super().load_state_dict(state_dict, strict=strict)
         return True
+    
+    def save_as_jit_script(self, path):
+        """
+        Save the encoder+actor as a TorchScript scripted module for inference.
+        The scripted module will perform the same computation as act_inference().
+        """
+
+        class EncoderActorScriptModule(nn.Module):
+            def __init__(self, encoder, actor, encoder_input_size):
+                super().__init__()
+                self.encoder = encoder
+                self.actor = actor
+                self.encoder_input_size = encoder_input_size
+
+            def forward(self, observations):
+                # type: (torch.Tensor) -> torch.Tensor
+                main_obs = observations[:, :-self.encoder_input_size]
+                enc_obs = observations[:, -self.encoder_input_size:]
+                encoded = self.encoder(enc_obs)
+                processed_obs = torch.cat([main_obs, encoded], dim=-1)
+                actions_mean = self.actor(processed_obs)
+                return actions_mean
+
+        script_module = EncoderActorScriptModule(self.encoder, self.actor, self.encoder_input_size)
+        scripted = torch.jit.script(script_module)
+        scripted.save(path)

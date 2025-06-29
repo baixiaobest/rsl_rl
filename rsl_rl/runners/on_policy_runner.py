@@ -97,6 +97,7 @@ class OnPolicyRunner:
         self.alg: PPO | Distillation = alg_class(policy, device=self.device, **self.alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg)
 
         # store training configuration
+        self.save_jit = self.cfg.get("save_jit", False)
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
         self.empirical_normalization = self.cfg["empirical_normalization"]
@@ -409,7 +410,11 @@ class OnPolicyRunner:
         if self.empirical_normalization:
             saved_dict["obs_norm_state_dict"] = self.obs_normalizer.state_dict()
             saved_dict["privileged_obs_norm_state_dict"] = self.privileged_obs_normalizer.state_dict()
-
+        # -- Save the policy as jit script if requested
+        if self.save_jit:
+            if isinstance(self.alg.policy, EncoderActorCritic):
+                # save the encoder+actor as a TorchScript scripted module for inference
+                self.alg.policy.save_as_jit_script(path.replace(".pt", "_jit.pt"))
         # save model
         torch.save(saved_dict, path)
 
