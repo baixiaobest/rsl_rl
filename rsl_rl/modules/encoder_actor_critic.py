@@ -20,6 +20,7 @@ class EncoderActorCritic(nn.Module):
         activation="elu",
         init_noise_std=1.0,
         noise_std_type: str = "scalar",
+        tanh_output: bool = False,
         **kwargs,
     ):
         if kwargs:
@@ -34,6 +35,8 @@ class EncoderActorCritic(nn.Module):
             raise ValueError(
                 f"encoder_dims must have at least 3 elements [input_dim, hidden_dim, output_dim], got {encoder_dims}"
             )
+        
+        self.tanh_output = tanh_output
 
         activation = resolve_nn_activation(activation)
 
@@ -63,6 +66,8 @@ class EncoderActorCritic(nn.Module):
         for layer_index in range(len(actor_hidden_dims)):
             if layer_index == len(actor_hidden_dims) - 1:
                 actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], num_actions))
+                if self.tanh_output:
+                    actor_layers.append(nn.Tanh())
             else:
                 actor_layers.append(nn.Linear(actor_hidden_dims[layer_index], actor_hidden_dims[layer_index + 1]))
                 actor_layers.append(activation)
@@ -157,7 +162,11 @@ class EncoderActorCritic(nn.Module):
 
     def act(self, observations, **kwargs):
         self.update_distribution(observations)
-        return self.distribution.sample()
+        actions = self.distribution.sample()
+        # Apply tanh to the actions
+        if self.tanh_output:
+            actions = torch.tanh(actions)
+        return actions
 
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
