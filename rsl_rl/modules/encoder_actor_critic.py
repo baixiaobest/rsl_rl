@@ -20,6 +20,7 @@ class EncoderActorCritic(nn.Module):
         activation="elu",
         init_noise_std=1.0,
         noise_std_type: str = "scalar",
+        noise_clip: float = 1.0,
         tanh_output: bool = False,
         **kwargs,
     ):
@@ -90,11 +91,12 @@ class EncoderActorCritic(nn.Module):
         print(f"Critic MLP: {self.critic}")
 
         # Action noise (same as ActorCritic)
+        self.noise_clip = noise_clip
         self.noise_std_type = noise_std_type
         if self.noise_std_type == "scalar":
-            self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
+            self.std = nn.Parameter(torch.atanh(init_noise_std / noise_clip * torch.ones(num_actions)))
         elif self.noise_std_type == "log":
-            self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
+            self.log_std = nn.Parameter(torch.log(torch.atanh(init_noise_std / noise_clip * torch.ones(num_actions))))
         else:
             raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
 
@@ -157,6 +159,8 @@ class EncoderActorCritic(nn.Module):
             std = torch.exp(self.log_std).expand_as(mean)
         else:
             raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+        
+        std = torch.tanh(std) * self.noise_clip  # Clip the standard deviation
         # create distribution
         self.distribution = Normal(mean, std)
 
