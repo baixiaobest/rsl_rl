@@ -30,12 +30,6 @@ class EncoderActorCritic(nn.Module):
                 + str([key for key in kwargs.keys()])
             )
         super().__init__()
-
-        # Check that encoder_dims has at least 3 elements
-        if len(encoder_dims) < 3:
-            raise ValueError(
-                f"encoder_dims must have at least 3 elements [input_dim, hidden_dim, output_dim], got {encoder_dims}"
-            )
         
         self.tanh_output = tanh_output
 
@@ -43,6 +37,12 @@ class EncoderActorCritic(nn.Module):
 
         # Encoder setup
         if not encoder_dims is None:
+            # Check that encoder_dims has at least 3 elements
+            if len(encoder_dims) < 3:
+                raise ValueError(
+                    f"encoder_dims is either none or has at least 3 elements [input_dim, hidden_dim, output_dim], got {encoder_dims}"
+                )
+
             encoder_input_size = encoder_dims[0]
             encoder_output_size = encoder_dims[-1]
             
@@ -140,18 +140,17 @@ class EncoderActorCritic(nn.Module):
         return self.distribution.entropy().sum(dim=-1)
 
     def process_observations(self, observations):
-        # Split observations
-        main_obs = observations[:, :-self.encoder_input_size]
-        enc_obs = observations[:, -self.encoder_input_size:]
-        
         # Encode the last part
         if not self.encoder is None: 
+            # Split observations
+            main_obs = observations[:, :-self.encoder_input_size]
+            enc_obs = observations[:, -self.encoder_input_size:]
             encoded = self.encoder(enc_obs)
             # Concatenate the main observations with the encoded vector
             processed_obs = torch.cat([main_obs, encoded], dim=-1)
         else:
             # if no encoder is used, just use the main observations
-            processed_obs = main_obs
+            processed_obs = observations
 
         return processed_obs
 
