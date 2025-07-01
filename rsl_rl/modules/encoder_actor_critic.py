@@ -42,20 +42,25 @@ class EncoderActorCritic(nn.Module):
         activation = resolve_nn_activation(activation)
 
         # Encoder setup
-        encoder_input_size = encoder_dims[0]
-        encoder_output_size = encoder_dims[-1]
-        
-        # Encoder
-        encoder_layers = []
-        encoder_layers.append(nn.Linear(encoder_dims[0], encoder_dims[1]))
-        encoder_layers.append(activation)
-        for layer_index in range(1, len(encoder_dims) - 1):
-            if layer_index == len(encoder_dims) - 2:  # Last layer
-                encoder_layers.append(nn.Linear(encoder_dims[layer_index], encoder_dims[layer_index + 1]))
-            else:
-                encoder_layers.append(nn.Linear(encoder_dims[layer_index], encoder_dims[layer_index + 1]))
-                encoder_layers.append(activation)
-        self.encoder = nn.Sequential(*encoder_layers)
+        if not encoder_dims is None:
+            encoder_input_size = encoder_dims[0]
+            encoder_output_size = encoder_dims[-1]
+            
+            # Encoder
+            encoder_layers = []
+            encoder_layers.append(nn.Linear(encoder_dims[0], encoder_dims[1]))
+            encoder_layers.append(activation)
+            for layer_index in range(1, len(encoder_dims) - 1):
+                if layer_index == len(encoder_dims) - 2:  # Last layer
+                    encoder_layers.append(nn.Linear(encoder_dims[layer_index], encoder_dims[layer_index + 1]))
+                else:
+                    encoder_layers.append(nn.Linear(encoder_dims[layer_index], encoder_dims[layer_index + 1]))
+                    encoder_layers.append(activation)
+            self.encoder = nn.Sequential(*encoder_layers)
+        else:
+            self.encoder = None
+            encoder_input_size = 0
+            encoder_output_size = 0
         
         # Modified actor input dimension
         actor_input_size = num_actor_obs - encoder_input_size + encoder_output_size
@@ -140,10 +145,14 @@ class EncoderActorCritic(nn.Module):
         enc_obs = observations[:, -self.encoder_input_size:]
         
         # Encode the last part
-        encoded = self.encoder(enc_obs)
-        
-        # Concatenate the main observations with the encoded vector
-        processed_obs = torch.cat([main_obs, encoded], dim=-1)
+        if not self.encoder is None: 
+            encoded = self.encoder(enc_obs)
+            # Concatenate the main observations with the encoded vector
+            processed_obs = torch.cat([main_obs, encoded], dim=-1)
+        else:
+            # if no encoder is used, just use the main observations
+            processed_obs = main_obs
+
         return processed_obs
 
     def update_distribution(self, observations):
@@ -216,9 +225,14 @@ class EncoderActorCritic(nn.Module):
             def forward(self, observations):
                 # type: (torch.Tensor) -> torch.Tensor
                 main_obs = observations[:, :-self.encoder_input_size]
-                enc_obs = observations[:, -self.encoder_input_size:]
-                encoded = self.encoder(enc_obs)
-                processed_obs = torch.cat([main_obs, encoded], dim=-1)
+                if self.encoder is None:
+                    # If no encoder, just use the main observations
+                    processed_obs = main_obs
+                else:
+                    enc_obs = observations[:, -self.encoder_input_size:]
+                    encoded = self.encoder(enc_obs)
+                    processed_obs = torch.cat([main_obs, encoded], dim=-1)
+
                 actions_mean = self.actor(processed_obs)
                 return actions_mean
 
