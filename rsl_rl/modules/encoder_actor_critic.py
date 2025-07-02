@@ -398,15 +398,13 @@ class EncoderActorCritic(nn.Module):
         
         std = torch.tanh(std) * self.noise_clip  # Clip the standard deviation
         std = torch.clamp(std, min=0.001)  # Ensure std is not zero
+
         # create distribution
         self.distribution = Normal(mean, std)
 
     def act(self, observations, **kwargs):
         self.update_distribution(observations)
         actions = self.distribution.sample()
-        # Apply tanh to the actions
-        if self.tanh_output:
-            actions = torch.tanh(actions)
         return actions
 
     def get_actions_log_prob(self, actions):
