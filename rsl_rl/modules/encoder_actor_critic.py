@@ -397,7 +397,7 @@ class EncoderActorCritic(nn.Module):
             raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
         
         std = torch.tanh(std) * self.noise_clip  # Clip the standard deviation
-        std = torch.clamp(std, min=1e-6)  # Ensure std is not zero
+        std = torch.clamp(std, min=0.001)  # Ensure std is not zero
         # create distribution
         self.distribution = Normal(mean, std)
 
