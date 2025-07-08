@@ -26,6 +26,7 @@ class EncoderActorCritic(nn.Module):
         encoder_dims=[12, 64, 64, 16],  # [input_dim, hidden_dim1, hidden_dim2, output_dim] for MLP
                                          # or list of dicts for CNN
         encoder_type="mlp",  # "mlp" or "cnn"
+        encoder_obs_normalize: bool = False,
         actor_hidden_dims=[256, 256, 256],
         critic_hidden_dims=[256, 256, 256],
         activation="elu",
@@ -100,6 +101,7 @@ class EncoderActorCritic(nn.Module):
         
         self.tanh_output = tanh_output
         self.encoder_type = encoder_type
+        self.encoder_obs_normalize = encoder_obs_normalize
 
         activation_fn = resolve_nn_activation(activation)
 
@@ -381,9 +383,10 @@ class EncoderActorCritic(nn.Module):
             main_obs = observations[:, :-self.encoder_input_size]
             enc_obs = observations[:, -self.encoder_input_size:]
             
-            # Normalize the depth image (zero-mean normalization)
-            enc_obs = (enc_obs - enc_obs.mean(dim=1, keepdim=True)) / (enc_obs.std(dim=1, keepdim=True) + 1e-8)
-            
+            if self.encoder_obs_normalize:
+                # Normalize the depth image (zero-mean normalization)
+                enc_obs = (enc_obs - enc_obs.mean(dim=1, keepdim=True)) / (enc_obs.std(dim=1, keepdim=True) + 1e-8)
+
             encoded = self.encoder(enc_obs)
             # Concatenate the main observations with the encoded vector
             processed_obs = torch.cat([main_obs, encoded], dim=-1)
