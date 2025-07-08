@@ -110,6 +110,7 @@ class EncoderActorCritic(nn.Module):
         self.tanh_output = tanh_output
         self.encoder_type = encoder_type
         self.encoder_obs_normalize = encoder_obs_normalize
+        self.share_encoder_with_critic = share_encoder_with_critic
 
         activation_fn = resolve_nn_activation(activation)
 
