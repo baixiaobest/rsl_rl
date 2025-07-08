@@ -263,14 +263,21 @@ class EncoderActorCritic(nn.Module):
                 padding = layer_config.get('padding', 0)
                 dilation = layer_config.get('dilation', 1)
                 
-                encoder_layers.append(nn.Conv2d(
+                conv_layer = nn.Conv2d(
                     in_channels=in_channels,
                     out_channels=out_channels,
                     kernel_size=kernel_size,
                     stride=stride,
                     padding=padding,
                     dilation=dilation
-                ))
+                )
+                
+                # Apply He (Kaiming) initialization
+                torch.nn.init.kaiming_uniform_(conv_layer.weight, nonlinearity='relu')
+                if conv_layer.bias is not None:
+                    torch.nn.init.constant_(conv_layer.bias, 0)
+                
+                encoder_layers.append(conv_layer)
                 encoder_layers.append(activation_fn)
                 
                 # Update dimensions
@@ -299,7 +306,7 @@ class EncoderActorCritic(nn.Module):
                 
                 current_height = int((current_height + 2 * p_h - d_h * (k_h - 1) - 1) / s_h + 1)
                 current_width = int((current_width + 2 * p_w - d_w * (k_w - 1) - 1) / s_w + 1)
-                
+            
             elif layer_type == 'pool':
                 kernel_size = layer_config.get('kernel_size', 2)
                 stride = layer_config.get('stride', kernel_size)
@@ -373,6 +380,10 @@ class EncoderActorCritic(nn.Module):
             # Split observations
             main_obs = observations[:, :-self.encoder_input_size]
             enc_obs = observations[:, -self.encoder_input_size:]
+            
+            # Normalize the depth image (zero-mean normalization)
+            enc_obs = (enc_obs - enc_obs.mean(dim=1, keepdim=True)) / (enc_obs.std(dim=1, keepdim=True) + 1e-8)
+            
             encoded = self.encoder(enc_obs)
             # Concatenate the main observations with the encoded vector
             processed_obs = torch.cat([main_obs, encoded], dim=-1)
