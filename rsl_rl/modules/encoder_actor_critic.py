@@ -27,6 +27,7 @@ class EncoderActorCritic(nn.Module):
                                          # or list of dicts for CNN
         encoder_type="mlp",  # "mlp" or "cnn"
         encoder_obs_normalize: bool = False,
+        share_encoder_with_critic: bool = False,
         actor_hidden_dims=[256, 256, 256],
         critic_hidden_dims=[256, 256, 256],
         activation="elu",
@@ -71,7 +72,9 @@ class EncoderActorCritic(nn.Module):
                 # Max pooling layer
                 {
                     'type': 'pool',
-                    'kernel_size': 2
+                    'pool_type': 'max',  # or 'avg' for average pooling
+                    'kernel_size': 2,
+                    'stride': 2
                 },
                 # Another convolutional layer
                 {
@@ -79,6 +82,11 @@ class EncoderActorCritic(nn.Module):
                     'out_channels': 64,
                     'kernel_size': 3,
                     'padding': 1
+                },
+                # Example with adaptive average pooling
+                {
+                    'type': 'adaptive_pool',
+                    'output_size': (8, 8)  # Directly specify the output dimensions
                 }
             ]
             
@@ -159,9 +167,15 @@ class EncoderActorCritic(nn.Module):
                 actor_layers.append(activation_fn)
         self.actor = nn.Sequential(*actor_layers)
 
+        # Modified critic input dimension if sharing encoder
+        if self.share_encoder_with_critic and self.encoder is not None:
+            critic_input_size = num_critic_obs - encoder_input_size + encoder_output_size
+        else:
+            critic_input_size = num_critic_obs
+
         # Value function (same as ActorCritic)
         critic_layers = []
-        critic_layers.append(nn.Linear(num_critic_obs, critic_hidden_dims[0]))
+        critic_layers.append(nn.Linear(critic_input_size, critic_hidden_dims[0]))
         critic_layers.append(activation_fn)
         for layer_index in range(len(critic_hidden_dims)):
             if layer_index == len(critic_hidden_dims) - 1:
@@ -313,12 +327,22 @@ class EncoderActorCritic(nn.Module):
                 kernel_size = layer_config.get('kernel_size', 2)
                 stride = layer_config.get('stride', kernel_size)
                 padding = layer_config.get('padding', 0)
+                pool_type = layer_config.get('pool_type', 'max')  # Default to max pooling
                 
-                encoder_layers.append(nn.MaxPool2d(
-                    kernel_size=kernel_size,
-                    stride=stride,
-                    padding=padding
-                ))
+                if pool_type.lower() == 'max':
+                    encoder_layers.append(nn.MaxPool2d(
+                        kernel_size=kernel_size,
+                        stride=stride,
+                        padding=padding
+                    ))
+                elif pool_type.lower() == 'avg':
+                    encoder_layers.append(nn.AvgPool2d(
+                        kernel_size=kernel_size,
+                        stride=stride,
+                        padding=padding
+                    ))
+                else:
+                    raise ValueError(f"Unknown pool_type: {pool_type}. Should be 'max' or 'avg'")
                 
                 # Update dimensions
                 if isinstance(kernel_size, tuple):
@@ -338,6 +362,19 @@ class EncoderActorCritic(nn.Module):
                 
                 current_height = int((current_height + 2 * p_h - k_h) / s_h + 1)
                 current_width = int((current_width + 2 * p_w - k_w) / s_w + 1)
+            
+            elif layer_type == 'adaptive_pool':
+                output_size = layer_config.get('output_size')
+                if output_size is None:
+                    raise ValueError(f"Adaptive pool layer must specify 'output_size'")
+                
+                encoder_layers.append(nn.AdaptiveAvgPool2d(output_size=output_size))
+                
+                # Update dimensions
+                if isinstance(output_size, tuple):
+                    current_height, current_width = output_size
+                else:
+                    current_height = current_width = output_size
         
         # Add a Flatten layer at the end
         encoder_layers.append(nn.Flatten())
@@ -430,7 +467,22 @@ class EncoderActorCritic(nn.Module):
         return actions_mean
 
     def evaluate(self, critic_observations, **kwargs):
-        value = self.critic(critic_observations)
+        if self.share_encoder_with_critic and self.encoder is not None:
+            # Process observations through encoder, similar to actor
+            main_obs = critic_observations[:, :-self.encoder_input_size]
+            enc_obs = critic_observations[:, -self.encoder_input_size:]
+            
+            if self.encoder_obs_normalize:
+                # Normalize the encoder input (zero-mean normalization)
+                enc_obs = (enc_obs - enc_obs.mean(dim=1, keepdim=True)) / (enc_obs.std(dim=1, keepdim=True) + 1e-8)
+                
+            encoded = self.encoder(enc_obs)
+            processed_obs = torch.cat([main_obs, encoded], dim=-1)
+            value = self.critic(processed_obs)
+        else:
+            # Use original critic observations directly
+            value = self.critic(critic_observations)
+
         return value
 
     def load_state_dict(self, state_dict, strict=True):
