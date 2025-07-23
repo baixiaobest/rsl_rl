@@ -517,7 +517,10 @@ class EncoderActorCritic(nn.Module):
 
             def forward(self, observations):
                 # type: (torch.Tensor) -> torch.Tensor
-                main_obs = observations[:, :-self.encoder_input_size]
+                if self.encoder_input_size > 0:
+                    main_obs = observations[:, :-self.encoder_input_size]
+                else:
+                    main_obs = observations
                 if self.encoder is None:
                     # If no encoder, just use the main observations
                     processed_obs = main_obs
