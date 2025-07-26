@@ -13,7 +13,18 @@ class Reshape(nn.Module):
         self.shape = shape
         
     def forward(self, x):
-        return x.view(x.size(0), *self.shape)
+        # Handle common reshape patterns explicitly for TorchScript compatibility
+        if len(self.shape) == 3:
+            # Most common case for images: [channels, height, width]
+            return x.reshape(x.size(0), self.shape[0], self.shape[1], self.shape[2])
+        elif len(self.shape) == 2:
+            # 2D case
+            return x.reshape(x.size(0), self.shape[0], self.shape[1])
+        elif len(self.shape) == 1:
+            # 1D case
+            return x.reshape(x.size(0), self.shape[0])
+        else:
+            raise ValueError(f"Reshape module only supports shapes of length 1, 2, or 3. Got shape of length {len(self.shape)}")
 
 class EncoderActorCritic(nn.Module):
     is_recurrent = False
