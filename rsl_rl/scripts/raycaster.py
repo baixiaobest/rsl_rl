@@ -302,7 +302,7 @@ def generate_obstacle_scan(robot_position, scene_items, num_rays=15, max_distanc
     Returns:
         Array of distances for each ray
     """
-    ray_caster = RayCaster(min_angle=-np.pi, max_angle=np.pi, num_rays=num_rays, max_distance=max_distance)
+    ray_caster = RayCaster(min_angle=0, max_angle=2*np.pi, num_rays=num_rays, max_distance=max_distance)
     distances = ray_caster.cast_rays(robot_position, scene_items)
     return distances
 
@@ -314,9 +314,9 @@ def main():
     scene = SceneItems()
     
     # Add some boxes
-    scene.add_box([5.0, 0.0], 2.0, 3.0)
-    scene.add_box([0.0, 4.0], 1.5, 1.5)
-    scene.add_box([-3.0, -2.0], 2.0, 4.0)
+    scene.add_box([5.0, 0.0], 1.0, 1.0)
+    scene.add_box([0.0, 4.0], 1.0, 1.5)
+    scene.add_box([-3.0, -2.0], 1.0, 4.0)
     
     # Add some circles
     scene.add_circle([3.0, 3.0], 1.0)
@@ -337,7 +337,7 @@ def main():
     
     # Test each position
     for i, pos in enumerate(test_positions):
-        ray_caster = RayCaster(num_rays=36, max_distance=10.0)  # More rays for better visualization
+        ray_caster = RayCaster(num_rays=64, max_distance=10.0)  # More rays for better visualization
         distances = ray_caster.cast_rays(pos, scene)
         
         # Visualize
@@ -357,7 +357,7 @@ def main():
     # Test a single position with detailed analysis
     print("\nDetailed ray analysis for robot at (2, 2):")
     pos = [2.0, 2.0]
-    ray_caster = RayCaster(num_rays=15, max_distance=10.0)
+    ray_caster = RayCaster(num_rays=32, max_distance=10.0)
     distances = ray_caster.cast_rays(pos, scene)
     
     # Print ray distances

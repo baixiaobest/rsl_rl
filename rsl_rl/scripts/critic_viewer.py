@@ -13,6 +13,10 @@ from scipy.interpolate import RegularGridInterpolator
 def generate_observations(x_min=-2.0, x_max=2.0, y_min=-2.0, y_max=2.0, res=0.5, 
                          global_goal_pos=[5.0, 0.0],  # Global goal position [x, y]
                          base_lin_vel=[0.0, 0.0, 0.0], base_ang_vel=[0.0, 0.0, 0.0], 
+                         joint_position=[0.0] * 12,  # Placeholder for joint positions
+                         joint_velocity=[0.0] * 12,  # Placeholder for joint velocities
+                         count_down=1.0,  # Placeholder for countdown
+                         num_rays=15,  # Number of rays for obstacle scan
                          scene_items=None, 
                          device="cpu"):
     """Generate a grid of observations for visualization.
@@ -58,15 +62,18 @@ def generate_observations(x_min=-2.0, x_max=2.0, y_min=-2.0, y_max=2.0, res=0.5,
     pose_2d_command = torch.stack([local_goal_x, local_goal_y, local_goal_z, heading_flat], dim=1)  # Shape: [num_points, 4]
     
     # Create joint positions and velocities (12 joints with zeros)
-    joint_pos = torch.zeros(num_points, 12, device=device)  # Shape: [num_points, 12]
-    joint_vel = torch.zeros(num_points, 12, device=device)  # Shape: [num_points, 12]
+    joint_pos = torch.tensor(joint_position, device=device).repeat(num_points, 1)  # Shape: [num_points, 12]
+    joint_vel = torch.tensor(joint_velocity, device=device).repeat(num_points, 1)  # Shape: [num_points, 12]
     
     # Last actions
     actions = torch.zeros(num_points, 12, device=device)  # Shape: [num_points, 12]
+
+    # Count down for episode length
+    count_down_vec = torch.ones((num_points, 1), device=device) * count_down
     
     # Generate obstacle scans for each robot position
     if scene_items is not None:
-        obstacles_scan = torch.zeros((num_points, 15), device=device)  # Shape: [num_points, 15]
+        obstacles_scan = torch.zeros((num_points, num_rays), device=device)  # Shape: [num_points, num_rays]
         
         # Process batches to avoid excessive computation
         batch_size = 100  # Process in batches for efficiency
@@ -74,11 +81,11 @@ def generate_observations(x_min=-2.0, x_max=2.0, y_min=-2.0, y_max=2.0, res=0.5,
             end_idx = min(i + batch_size, num_points)
             for j in range(i, end_idx):
                 robot_pos = [robot_x[j].item(), robot_y[j].item()]
-                scan = generate_obstacle_scan(robot_pos, scene_items, num_rays=15)
+                scan = generate_obstacle_scan(robot_pos, scene_items, num_rays=num_rays)
                 obstacles_scan[j] = torch.tensor(scan, device=device)
     else:
         # Default: constant 10.0 distance (no obstacles)
-        obstacles_scan = torch.full((num_points, 15), 10.0, device=device)  # Shape: [num_points, 15]
+        obstacles_scan = torch.full((num_points, num_rays), 10.0, device=device)  # Shape: [num_points, num_rays]
     
     # Concatenate all components
     observations = torch.cat([
@@ -89,7 +96,8 @@ def generate_observations(x_min=-2.0, x_max=2.0, y_min=-2.0, y_max=2.0, res=0.5,
         joint_pos,                # 12
         joint_vel,                # 12
         actions,                  # 12
-        obstacles_scan,           # 15
+        count_down_vec,           # 1
+        obstacles_scan,           # num_rays
     ], dim=1)
     
     print(f"Generated observation grid with shape: {observations.shape}")
@@ -391,13 +399,14 @@ def visualize_value_surface(values, grid_info, global_goal_pos=None, title="Valu
 
 def main():
     # Hardcoded parameters - modify these as needed
-    model_path = "logs/rsl_rl/EncoderActorCriticGO2/E2ENavigation/ObstacleScanner/model_long_clearance.ptrom"  # Replace with your model path
-    num_critic_obs = 64
-    num_actor_obs = 64
+    model_path = "logs/rsl_rl/EncoderActorCriticGO2/E2ENavigation/ObstacleScanner/model_grad.ptrom"  # Replace with your model path
+    num_rays = 32
+    num_critic_obs = 50 + num_rays
+    num_actor_obs = 50 + num_rays
     num_actions = 12
     encoder_dims = None
     device = "cuda"  # Use "cuda" if you have a GPU
-    global_goal_pos = [10.0, 0.0]
+    global_goal_pos = [10, 0]
     base_lin_vel = [0.0, 0.0, 0.0]
     
     # Check if model file exists
@@ -415,7 +424,7 @@ def main():
         num_critic_obs=num_critic_obs,
         num_actions=num_actions,
         actor_hidden_dims=[128, 128, 64],
-        critic_hidden_dims=[128, 64],
+        critic_hidden_dims=[128, 128],
         # actor_hidden_dims=[128, 128, 64],
         # critic_hidden_dims=[128, 128, 64],
         # actor_hidden_dims=[128, 128, 64, 64],
@@ -443,7 +452,7 @@ def main():
     scene = SceneItems()
     scene.add_circle([12.0, 2.0], 1.0)
     scene.add_circle([8.0, 5.0], 1.0)
-    scene.add_box([8.0, -2.0], 1.0, 2.0)
+    scene.add_box([8.0, -2.0], 2.0, 2.0)
     scene.add_box([4.0, 2.0], 0.5, 2.0)
     
     # Generate artificial observation data
@@ -456,6 +465,8 @@ def main():
         base_lin_vel=base_lin_vel,
         global_goal_pos=global_goal_pos,  # Goal is at (10, 0) in world frame
         scene_items=scene,
+        num_rays=num_rays,
+        count_down=1,
         device=device
     )
     
@@ -485,14 +496,10 @@ def main():
 
     # Define some starting points for gradient flow visualization
     flow_start_points = [
-        [2.0, 2.0],    # Starting from below and left of goal
-        [15.0, 5.0],   # Starting from right of goal
-        [5.0, -5.0],   # Starting from below goal
-        [18.0, -8.0],  # Starting from corner
-        [3.0, 8.0],    # Starting from top left
-        [12.0, -5.0],  # Starting near an obstacle
-        [7.0, 7.0],    # Another point
-        [15.0, -3.0]   # One more point
+        [6.0, -5.0],
+        [17.0, -5.0],
+        [5.0, 5.0],
+        [7.5, 1.0]
     ]
 
     # 2D heatmap visualization with gradient flow
@@ -503,7 +510,7 @@ def main():
         scene_items=scene,
         title=f"Value Function with Gradient Flow",
         save_path="value_function_with_flow.png",
-        show_vector_field=True,        # Show vector field
+        show_vector_field=False,        # Show vector field
         vector_density=25,             # Control vector density
         # flow_start_points=flow_start_points,  # Add flow paths
         # flow_step_size=0.05,           # Step size for flow paths
