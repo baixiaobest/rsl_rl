@@ -402,25 +402,34 @@ class OnPolicyRunner:
             "iter": self.current_learning_iteration,
             "infos": infos,
         }
+
         # -- Save RND model if used
         if self.alg.rnd:
             saved_dict["rnd_state_dict"] = self.alg.rnd.state_dict()
             saved_dict["rnd_optimizer_state_dict"] = self.alg.rnd_optimizer.state_dict()
+
         # -- Save observation normalizer if used
         if self.empirical_normalization:
             saved_dict["obs_norm_state_dict"] = self.obs_normalizer.state_dict()
             saved_dict["privileged_obs_norm_state_dict"] = self.privileged_obs_normalizer.state_dict()
+
         # -- Save the policy as jit script if requested
-        if self.save_jit:
-            if isinstance(self.alg.policy, EncoderActorCritic):
-                # save the encoder+actor as a TorchScript scripted module for inference
-                self.alg.policy.save_as_jit_script(path.replace(".pt", "_jit.pt"))
-        # save model
+        save_jit = self.save_jit and isinstance(self.alg.policy, EncoderActorCritic)
+        if save_jit:
+                # Create a JIT path
+                jit_path = path.replace(".pt", "_jit.pt")
+                
+                # Save the encoder+actor as a TorchScript scripted module for inference
+                self.alg.policy.save_as_jit_script(jit_path)
+
+        # Save the model dictionary
         torch.save(saved_dict, path)
 
-        # upload model to external logging service
+        # Upload model to external logging service
         if self.logger_type in ["neptune", "wandb"] and not self.disable_logs:
             self.writer.save_model(path, self.current_learning_iteration)
+            if save_jit:
+                self.writer.save_file(jit_path)
 
     def load(self, path: str, load_optimizer: bool = True):
         loaded_dict = torch.load(path, weights_only=False)
