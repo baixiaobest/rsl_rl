@@ -436,7 +436,7 @@ class OnPolicyRunner:
         # -- Load model
         resumed_training = self.alg.policy.load_state_dict(loaded_dict["model_state_dict"])
         # -- Load RND model if used
-        if self.alg.rnd and not self.policy_cfg.disable_rnd_load:
+        if self.alg.rnd and not self.cfg['disable_rnd_load']:
             self.alg.rnd.load_state_dict(loaded_dict["rnd_state_dict"])
         # -- Load observation normalizer if used
         if self.empirical_normalization:
@@ -455,7 +455,7 @@ class OnPolicyRunner:
             # -- algorithm optimizer
             self.alg.optimizer.load_state_dict(loaded_dict["optimizer_state_dict"])
             # -- RND optimizer if used
-            if self.alg.rnd:
+            if self.alg.rnd and not self.cfg['disable_rnd_load']:
                 self.alg.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
         # -- load current learning iteration
         if resumed_training:
