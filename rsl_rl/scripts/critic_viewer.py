@@ -5,10 +5,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 from rsl_rl.modules.encoder_actor_critic import EncoderActorCritic
-
-# Add these imports at the top
 from raycaster import SceneItems, RayCaster, generate_obstacle_scan
 from scipy.interpolate import RegularGridInterpolator
+from height_map import SceneItems3D, HeightMapGenerator
+from terrains import build_linear_stairs_scene3d, build_turning_stairs_90_scene3d
 
 def generate_observations(x_min=-2.0, x_max=2.0, y_min=-2.0, y_max=2.0, res=0.5, 
                          global_goal_pos=[5.0, 0.0],  # Global goal position [x, y]
@@ -111,6 +111,130 @@ def generate_observations(x_min=-2.0, x_max=2.0, y_min=-2.0, y_max=2.0, res=0.5,
         'grid_shape': (len(x), len(y))
     }
     
+    return observations, grid_info
+
+def generate_observations_height_map(
+    x_min=-2.0, x_max=2.0, y_min=-2.0, y_max=2.0, res=0.05,
+    global_goal_pos=[5.0, 0.0],
+    base_lin_vel=[0.0, 0.0, 0.0], base_ang_vel=[0.0, 0.0, 0.0],
+    joint_position=[0.0] * 12, joint_velocity=[0.0] * 12,
+    device="cpu",
+    # Height scan parameters
+    height_scan_size=21,
+    height_scan_resolution=0.2,
+    robot_height=0.4,
+    ordering="xy",  # "xy" (x-major) or "yx" (y-major)
+    scene_items_3d=None,
+    hm_generator=None,
+    ground_z=0.0,
+):
+    """Generate observations with a 21x21 height-map scan around each robot position.
+
+    - Scan values: (robot_height - terrain_height).
+    - Ordering 'xy' flattens x-major (inner loop x, outer loop y) to match GridPatternCfg semantics.
+    - local_goal_z is queried from the height map at global_goal_pos (x, y).
+    """
+    # Grid of robot positions
+    x = torch.arange(x_min, x_max + res, res, device=device)
+    y = torch.arange(y_min, y_max + res, res, device=device)
+    xx, yy = torch.meshgrid(x, y, indexing="ij")
+    num_points = xx.numel()
+    robot_x = xx.reshape(-1)
+    robot_y = yy.reshape(-1)
+
+    # Precompute height-map covering the whole region plus margin for windows
+    def _build_hm(scene3d, xmin, xmax, ymin, ymax, scan_size, res_hm, ground):
+        half_extent = (scan_size - 1) * 0.5 * res_hm
+        top_left = (xmin - half_extent, ymax + half_extent)  # image-like convention (y decreases downward)
+        size_xy = ((xmax - xmin) + 2 * half_extent, (ymax - ymin) + 2 * half_extent)
+        gen = HeightMapGenerator(scene3d, ground_z=ground)
+        gen.generate_map(top_left=top_left, size_xy=size_xy, resolution=res_hm)
+        return gen
+
+    if hm_generator is None:
+        if scene_items_3d is None:
+            scene_items_3d = SceneItems3D()  # empty scene => ground only
+        hm_generator = _build_hm(scene_items_3d, x_min, x_max, y_min, y_max,
+                                 height_scan_size, height_scan_resolution, ground_z)
+
+    # Pose command and other obs components
+    goal_x, goal_y = float(global_goal_pos[0]), float(global_goal_pos[1])
+    local_goal_x = torch.full_like(robot_x, goal_x) - robot_x
+    local_goal_y = torch.full_like(robot_y, goal_y) - robot_y
+
+    # local_goal_z: query height at global goal position (bilinear), same for all points
+    h_goal = hm_generator.query_point((goal_x, goal_y), method="bilinear")
+    local_goal_z = torch.full_like(robot_x, float(h_goal), dtype=torch.float32)
+
+    heading_flat = torch.zeros_like(robot_x)
+    base_lin_vel_tensor = torch.tensor(base_lin_vel, device=device).repeat(num_points, 1)
+    base_ang_vel_tensor = torch.tensor(base_ang_vel, device=device).repeat(num_points, 1)
+    projected_gravity = torch.tensor([0.0, 0.0, -1.0], device=device).repeat(num_points, 1)
+    pose_2d_command = torch.stack([local_goal_x, local_goal_y, local_goal_z, heading_flat], dim=1)
+    joint_pos = torch.tensor(joint_position, device=device).repeat(num_points, 1)
+    joint_vel = torch.tensor(joint_velocity, device=device).repeat(num_points, 1)
+    actions = torch.zeros(num_points, 12, device=device)
+    foot_scan = torch.zeros((num_points, 4*8), device=device)  # Placeholder for foot scans
+
+    # Simplified height scan at a robot position: snap to grid alignment, then query_grid
+    def _height_scan_at(rx, ry):
+        width = (height_scan_size - 1) * height_scan_resolution
+        height = (height_scan_size - 1) * height_scan_resolution
+
+        # Centered top-left around robot (image-like convention)
+        x0 = rx - width * 0.5
+        y0 = ry + height * 0.5
+
+        # Snap top-left to precomputed grid indices
+        _, _, _, meta = hm_generator.get_full_map()
+        fx0 = (x0 - meta["x_left"]) / meta["res_x"]
+        fy0 = (meta["y_top"] - y0) / meta["res_y"]
+        ix0 = int(round(fx0))
+        iy0 = int(round(fy0))
+        x0_aligned = meta["x_left"] + ix0 * meta["res_x"]
+        y0_aligned = meta["y_top"] - iy0 * meta["res_y"]
+
+        flat = hm_generator.query_grid(
+            top_left=(x0_aligned, y0_aligned),
+            size_xy=(width, height),
+            resolution=height_scan_resolution,
+            order="x-major" if ordering.lower() == "xy" else "y-major",
+            return_coords=False,
+        ).astype(np.float32)
+
+        # Convert to robot-relative heights and ensure flattened 1D
+        return (robot_height - flat).reshape(-1)
+
+    # Build all height scans (flattened)
+    scan_len = height_scan_size * height_scan_size
+    height_scans = torch.empty((num_points, scan_len), device=device, dtype=torch.float32)
+    batch_size = 200
+    for i in range(0, num_points, batch_size):
+        end_idx = min(i + batch_size, num_points)
+        for j in range(i, end_idx):
+            scan = _height_scan_at(robot_x[j].item(), robot_y[j].item())
+            height_scans[j] = torch.from_numpy(scan).to(device)
+
+    height_scans = height_scans.reshape(num_points, -1)
+
+    # Assemble observations
+    observations = torch.cat([
+        base_lin_vel_tensor,      # 3
+        base_ang_vel_tensor,      # 3
+        projected_gravity,        # 3
+        pose_2d_command,          # 4 (z from goal height)
+        joint_pos,                # 12
+        joint_vel,                # 12
+        actions,                  # 12
+        foot_scan,                # 32 (placeholder)
+        height_scans,             # 21*21 flattened
+    ], dim=1)
+
+    grid_info = {
+        'robot_positions': torch.stack([robot_x, robot_y], dim=1),
+        'local_goals': torch.stack([local_goal_x, local_goal_y], dim=1),
+        'grid_shape': (len(x), len(y)),
+    }
     return observations, grid_info
 
 def follow_gradient_flow(values_grid, x_coords, y_coords, start_point, step_size=0.05, 
@@ -399,7 +523,7 @@ def visualize_value_surface(values, grid_info, global_goal_pos=None, title="Valu
 
 def main():
     # Hardcoded parameters - modify these as needed
-    model_path = "logs/rsl_rl/EncoderActorCriticGO2/E2ENavigation/ObstacleScanner/model_grad.ptrom"  # Replace with your model path
+    model_path = "logs/rsl_rl/EncoderActorCriticGO2/E2ENavigation/ObstacleScanner/model_3900.ptrom"  # Replace with your model path
     num_rays = 32
     num_critic_obs = 50 + num_rays
     num_actor_obs = 50 + num_rays
@@ -526,5 +650,136 @@ def main():
         save_path="value_function_3d.png"
     )
 
+def main_height_map():
+    # Configure model and scan parameters
+    model_path = "logs/rsl_rl/EncoderActorCriticGO2/Stairs/CNN/model_5998_turn_180.pt"  # Update as needed
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    global_goal_pos = [13.5, 6.0]
+    base_lin_vel = [0.0, 0.0, 0.0]
+
+    # Height-map scan settings
+    height_scan_size = 21
+    height_scan_resolution = 0.2
+    robot_height = 0.4
+    ordering = "xy"  # x-major
+
+    # Observation dims (81 generic features + 21*21 scan)
+    scan_len = height_scan_size * height_scan_size  # 441
+    generic_obs = 81
+    num_critic_obs = generic_obs + scan_len
+    num_actor_obs = generic_obs + scan_len
+    num_actions = 12
+
+    # CNN encoder config for 21x21 scan
+    e2e_cnn_config = [
+        { 'type': 'reshape', 'input_size': 441, 'shape': [1, 21, 21] },
+        { 'type': 'conv', 'out_channels': 8,  'kernel_size': 3, 'dilation': 1, 'stride': 1, 'padding': 1 },
+        { 'type': 'pool', 'kernel_size': 2, 'stride': 2 },
+        { 'type': 'conv', 'out_channels': 16, 'kernel_size': 3, 'dilation': 1, 'stride': 1, 'padding': 1 },
+        { 'type': 'pool', 'kernel_size': 2, 'stride': 2 },
+        { 'type': 'conv', 'out_channels': 32, 'kernel_size': 3, 'dilation': 1, 'stride': 1, 'padding': 1 },
+        { 'type': 'adaptive_pool', 'output_size': (2, 2) }
+    ]
+
+    # Load model
+    if not os.path.isfile(model_path):
+        print(f"Error: Model file '{model_path}' not found")
+        return
+    print(f"Loading model from: {model_path}")
+    checkpoint = torch.load(model_path, map_location=device)
+
+    model = EncoderActorCritic(
+        num_actor_obs=num_actor_obs,
+        num_critic_obs=num_critic_obs,
+        num_actions=num_actions,
+        actor_hidden_dims=[128, 128, 64],
+        critic_hidden_dims=[128, 128, 64],
+        encoder_dims=e2e_cnn_config,
+        encoder_type="cnn",
+        share_encoder_with_critic=True,
+        activation="elu",
+        tanh_output=True,
+    )
+    state = checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint
+    model.load_state_dict(state)
+    model.to(device)
+    model.eval()
+
+    # Build 3D stairs scene (as boxes)
+    # stairs_scene = build_linear_stairs_scene3d(
+    #     center=(8.0, 0.0),
+    #     num_steps=12,
+    #     step_height=0.1,
+    #     step_width=0.30,
+    #     stairs_width=1.2,
+    #     direction="y+",
+    #     base_z=0.0,
+    # )
+
+     # Build 90-degree turning stairs scene as 3D boxes
+    stairs_scene = build_turning_stairs_90_scene3d(
+        center=(8.0, 0.0),
+        num_steps_run1=20,
+        num_steps_run2=20,
+        step_height=0.1,
+        step_width=0.3,
+        stairs_width=1.2,
+        landing_length=1.2,
+        landing_width=None,
+        turn_right=True,
+        base_z=0.0,
+    )
+
+    # World region to evaluate
+    x_min, x_max = 0.0, 20.0
+    y_min, y_max = -10.0, 10.0
+
+    # Generate observations using the height-map scan
+    observations, grid_info = generate_observations_height_map(
+        x_min=x_min,
+        x_max=x_max,
+        y_min=y_min,
+        y_max=y_max,
+        res=0.05,
+        global_goal_pos=global_goal_pos,
+        base_lin_vel=base_lin_vel,
+        device=device,
+        height_scan_size=height_scan_size,
+        height_scan_resolution=height_scan_resolution,
+        robot_height=robot_height,
+        ordering=ordering,
+        scene_items_3d=stairs_scene,
+        hm_generator=None,   # let the function precompute the map
+        ground_z=0.0,
+    )
+
+    # Evaluate the critic
+    print("\nEvaluating critic on height-map observations...")
+    with torch.no_grad():
+        values = model.evaluate(observations)
+
+    # Visualizations
+    visualize_value_heatmap(
+        values=values,
+        grid_info=grid_info,
+        global_goal_pos=global_goal_pos,
+        scene_items=None,
+        title="Value Function (Height-Map Scan on Stairs)",
+        save_path="value_function_heightmap_stairs_heatmap.png",
+        show_plot=True,
+        contour_levels=20,
+        show_vector_field=False,
+    )
+
+    visualize_value_surface(
+        values=values,
+        grid_info=grid_info,
+        global_goal_pos=global_goal_pos,
+        title="Value Function 3D View (Height-Map Stairs)",
+        save_path="value_function_heightmap_stairs_3d.png",
+        show_plot=True,
+    )
+
 if __name__ == "__main__":
-    main()
+    # main()
+    main_height_map()  # Uncomment to run height-map version
