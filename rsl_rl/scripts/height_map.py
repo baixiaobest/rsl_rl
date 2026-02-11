@@ -162,8 +162,21 @@ class HeightMapGenerator:
         resolution: Union[Tuple[float, float], float],
         order: str = "x-major",
         return_coords: bool = False,
+        rotate_offset: float = 0.0,
     ):
-        """Query a grid window from the precomputed map (fast slicing)."""
+        """Query a grid window from the precomputed map (fast slicing).
+        
+        Args:
+            top_left: Top-left corner of the query window (x, y)
+            size_xy: Size of the window (width_x, height_y)
+            resolution: Grid resolution (uniform or (res_x, res_y))
+            order: Flattening order - 'x-major' or 'y-major'
+            return_coords: If True, return coordinates as well
+            rotate_offset: Z-axis rotation angle in radians (user's robotics frame).
+                          Positive rotation is CCW in user's frame.
+                          The sampling grid will be rotated by -rotate_offset in the
+                          height map's image frame before sampling.
+        """
         self._require_map()
         m = self._meta
 
@@ -171,9 +184,6 @@ class HeightMapGenerator:
             res_x, res_y = float(resolution[0]), float(resolution[1])
         else:
             res_x = res_y = float(resolution)
-
-        if abs(res_x - m["res_x"]) > m["eps"] or abs(res_y - m["res_y"]) > m["eps"]:
-            raise ValueError("Requested resolution must match the precomputed map resolution.")
 
         x0, y0 = float(top_left[0]), float(top_left[1])
         w, h = float(size_xy[0]), float(size_xy[1])
@@ -183,28 +193,104 @@ class HeightMapGenerator:
         if Nxw <= 1 or Nyw <= 1:
             raise ValueError("Requested window must have at least 2x2 samples.")
 
-        # Fractional indices in the precomputed grid
-        fx0 = (x0 - m["x_left"]) / m["res_x"]
-        fy0 = (m["y_top"] - y0) / m["res_y"]
+        # If no rotation, use fast path (existing implementation)
+        if abs(rotate_offset) < 1e-9:
+            if abs(res_x - m["res_x"]) > m["eps"] or abs(res_y - m["res_y"]) > m["eps"]:
+                raise ValueError("Requested resolution must match the precomputed map resolution.")
 
-        # Check alignment to integer indices
-        tol = 1e-6
-        if abs(fx0 - round(fx0)) > tol or abs(fy0 - round(fy0)) > tol:
-            raise ValueError("Requested window top-left is not aligned to the precomputed grid.")
+            # Fractional indices in the precomputed grid
+            fx0 = (x0 - m["x_left"]) / m["res_x"]
+            fy0 = (m["y_top"] - y0) / m["res_y"]
 
-        ix0 = int(round(fx0))
-        iy0 = int(round(fy0))
+            # Check alignment to integer indices
+            tol = 1e-6
+            if abs(fx0 - round(fx0)) > tol or abs(fy0 - round(fy0)) > tol:
+                raise ValueError("Requested window top-left is not aligned to the precomputed grid.")
 
-        ix1 = ix0 + Nxw - 1
-        iy1 = iy0 + Nyw - 1
+            ix0 = int(round(fx0))
+            iy0 = int(round(fy0))
 
-        if ix0 < 0 or iy0 < 0 or ix1 >= m["Nx"] or iy1 >= m["Ny"]:
-            raise ValueError("Requested window is out of precomputed map bounds.")
+            ix1 = ix0 + Nxw - 1
+            iy1 = iy0 + Nyw - 1
 
-        Hw = self._H[iy0:iy1 + 1, ix0:ix1 + 1]
-        Xw = self._X[iy0:iy1 + 1, ix0:ix1 + 1] if return_coords else None
-        Yw = self._Y[iy0:iy1 + 1, ix0:ix1 + 1] if return_coords else None
+            if ix0 < 0 or iy0 < 0 or ix1 >= m["Nx"] or iy1 >= m["Ny"]:
+                raise ValueError("Requested window is out of precomputed map bounds.")
 
+            Hw = self._H[iy0:iy1 + 1, ix0:ix1 + 1]
+            Xw = self._X[iy0:iy1 + 1, ix0:ix1 + 1] if return_coords else None
+            Yw = self._Y[iy0:iy1 + 1, ix0:ix1 + 1] if return_coords else None
+
+            order = order.lower()
+            if order in ("x-major", "xy", "c"):
+                flat = Hw.ravel(order="C")
+            elif order in ("y-major", "yx", "f"):
+                flat = Hw.ravel(order="F")
+            else:
+                raise ValueError("order must be 'x-major' or 'y-major'.")
+
+            if return_coords:
+                return flat, Xw, Yw, Hw
+            return flat
+
+        # Rotated path: generate grid, rotate, sample with interpolation
+        # Generate unrotated grid points
+        xs = x0 + np.arange(Nxw, dtype=float) * res_x
+        ys = y0 - np.arange(Nyw, dtype=float) * res_y  # decreasing (image frame)
+        X_grid, Y_grid = np.meshgrid(xs, ys)  # [Nyw, Nxw]
+        
+        # Find center of the grid
+        center_x = x0 + w * 0.5
+        center_y = y0 - h * 0.5
+        
+        # Rotate points around center by rotate_offset
+        # Since we're rotating the sampling grid (not the map), and both frames
+        # share the x-axis, we apply the rotation with the same sign
+        theta = rotate_offset
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+        
+        # Translate to origin, rotate, translate back
+        dx = X_grid - center_x
+        dy = Y_grid - center_y
+        X_rotated = center_x + cos_theta * dx - sin_theta * dy
+        Y_rotated = center_y + sin_theta * dx + cos_theta * dy
+        
+        # Sample heights at rotated positions using vectorized bilinear interpolation
+        # Convert rotated positions to fractional indices
+        fx = (X_rotated - m["x_left"]) / m["res_x"]
+        fy = (m["y_top"] - Y_rotated) / m["res_y"]
+        
+        # Clamp to valid interior range for interpolation
+        fx = np.clip(fx, 0.0, m["Nx"] - 1 - m["eps"])
+        fy = np.clip(fy, 0.0, m["Ny"] - 1 - m["eps"])
+        
+        # Get integer indices for the four surrounding points
+        ix0 = np.floor(fx).astype(int)
+        iy0 = np.floor(fy).astype(int)
+        ix1 = np.minimum(ix0 + 1, m["Nx"] - 1)
+        iy1 = np.minimum(iy0 + 1, m["Ny"] - 1)
+        
+        # Compute interpolation weights
+        tx = fx - ix0
+        ty = fy - iy0
+        
+        # Gather heights at the four corners
+        h00 = self._H[iy0, ix0]
+        h10 = self._H[iy0, ix1]
+        h01 = self._H[iy1, ix0]
+        h11 = self._H[iy1, ix1]
+        
+        # Bilinear interpolation
+        Hw = ((1 - tx) * (1 - ty) * h00 +
+              tx * (1 - ty) * h10 +
+              (1 - tx) * ty * h01 +
+              tx * ty * h11)
+        
+        # Prepare coordinate grids if needed
+        Xw = X_rotated if return_coords else None
+        Yw = Y_rotated if return_coords else None
+        
+        # Flatten according to order
         order = order.lower()
         if order in ("x-major", "xy", "c"):
             flat = Hw.ravel(order="C")
@@ -212,7 +298,7 @@ class HeightMapGenerator:
             flat = Hw.ravel(order="F")
         else:
             raise ValueError("order must be 'x-major' or 'y-major'.")
-
+        
         if return_coords:
             return flat, Xw, Yw, Hw
         return flat

@@ -123,7 +123,8 @@ def generate_observations_height_map(
     height_scan_size=21,
     height_scan_resolution=0.2,
     robot_height=0.4,
-    robot_heading=1.54,
+    robot_heading: float = 0.0,
+    point_toward_goal=False,  # If True, heading points toward goal (overrides robot_heading)
     ordering="xy",  # "xy" (x-major) or "yx" (y-major)
     scene_items_3d=None,
     hm_generator=None,
@@ -167,7 +168,11 @@ def generate_observations_height_map(
     h_goal = hm_generator.query_point((goal_x, goal_y), method="bilinear")
     local_goal_z = torch.full_like(robot_x, float(h_goal), dtype=torch.float32) + robot_height
 
-    heading_flat = torch.full_like(robot_x, robot_heading)
+    # Compute heading: either constant or pointing toward goal
+    if point_toward_goal:
+        heading_flat = torch.atan2(local_goal_y, local_goal_x)
+    else:
+        heading_flat = torch.full_like(robot_x, robot_heading)
     base_lin_vel_tensor = torch.tensor(base_lin_vel, device=device).repeat(num_points, 1)
     base_ang_vel_tensor = torch.tensor(base_ang_vel, device=device).repeat(num_points, 1)
     projected_gravity = torch.tensor([0.0, 0.0, -1.0], device=device).repeat(num_points, 1)
@@ -178,9 +183,10 @@ def generate_observations_height_map(
     foot_scan = torch.zeros((num_points, 4*8), device=device)  # Placeholder for foot scans
 
     # Simplified height scan at a robot position: snap to grid alignment, then query_grid
-    def _height_scan_at(rx, ry):
+    def _height_scan_at(rx, ry, heading):
         width = (height_scan_size - 1) * height_scan_resolution
         height = (height_scan_size - 1) * height_scan_resolution
+        rotate_offset = heading - np.pi*0.5
 
         # Centered top-left around robot (image-like convention)
         x0 = rx - width * 0.5
@@ -201,10 +207,13 @@ def generate_observations_height_map(
             resolution=height_scan_resolution,
             order="x-major" if ordering.lower() == "xy" else "y-major",
             return_coords=False,
+            rotate_offset=rotate_offset
         ).astype(np.float32)
 
+        point_height = hm_generator.query_point((rx, ry), method="bilinear")
+
         # Convert to robot-relative heights and ensure flattened 1D
-        return (robot_height - flat).reshape(-1)
+        return (point_height - flat).reshape(-1)
 
     # Build all height scans (flattened)
     scan_len = height_scan_size * height_scan_size
@@ -213,10 +222,14 @@ def generate_observations_height_map(
     for i in range(0, num_points, batch_size):
         end_idx = min(i + batch_size, num_points)
         for j in range(i, end_idx):
-            scan = _height_scan_at(robot_x[j].item(), robot_y[j].item())
+            # Use per-point heading if point_toward_goal is enabled
+            heading_j = heading_flat[j].item()
+            scan = _height_scan_at(robot_x[j].item(), robot_y[j].item(), heading_j)
             height_scans[j] = torch.from_numpy(scan).to(device)
 
     height_scans = height_scans.reshape(num_points, -1)
+
+    # debug_scanes = _height_scan_at(0.0, 1.0, 1.5*np.pi)
 
     # Assemble observations
     observations = torch.cat([
@@ -655,7 +668,7 @@ def main_height_map():
     # Configure model and scan parameters
     model_path = "logs/rsl_rl/EncoderActorCriticGO2/Stairs/CNN/model_9997_turn180.pt"  # Update as needed
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    global_goal_pos = [2.0, 1.0]
+    global_goal_pos = [2.0, -1.0]
     base_lin_vel = [0.0, 0.0, 0.0]
 
     # Height-map scan settings
@@ -733,8 +746,8 @@ def main_height_map():
 
     stairs_scene = build_turning_stairs_180_scene3d(
         center=(0.0, 0.0),
-        num_steps_run1=20,
-        num_steps_run2=20,
+        num_steps_run1=10,
+        num_steps_run2=10,
         step_height=0.05,
         step_width=0.25,
         stairs_width=2.0,
@@ -761,7 +774,8 @@ def main_height_map():
         height_scan_size=height_scan_size,
         height_scan_resolution=height_scan_resolution,
         robot_height=robot_height,
-        robot_heading=1.54,  # facing +y
+        robot_heading=0.5*np.pi,
+        point_toward_goal=False,
         ordering=ordering,
         scene_items_3d=stairs_scene,
         hm_generator=None,   # let the function precompute the map
