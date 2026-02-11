@@ -8,7 +8,7 @@ from rsl_rl.modules.encoder_actor_critic import EncoderActorCritic
 from raycaster import SceneItems, RayCaster, generate_obstacle_scan
 from scipy.interpolate import RegularGridInterpolator
 from height_map import SceneItems3D, HeightMapGenerator
-from terrains import build_linear_stairs_scene3d, build_turning_stairs_90_scene3d
+from terrains import build_linear_stairs_scene3d, build_turning_stairs_90_scene3d, build_turning_stairs_180_scene3d
 
 def generate_observations(x_min=-2.0, x_max=2.0, y_min=-2.0, y_max=2.0, res=0.5, 
                          global_goal_pos=[5.0, 0.0],  # Global goal position [x, y]
@@ -123,6 +123,7 @@ def generate_observations_height_map(
     height_scan_size=21,
     height_scan_resolution=0.2,
     robot_height=0.4,
+    robot_heading=1.54,
     ordering="xy",  # "xy" (x-major) or "yx" (y-major)
     scene_items_3d=None,
     hm_generator=None,
@@ -164,9 +165,9 @@ def generate_observations_height_map(
 
     # local_goal_z: query height at global goal position (bilinear), same for all points
     h_goal = hm_generator.query_point((goal_x, goal_y), method="bilinear")
-    local_goal_z = torch.full_like(robot_x, float(h_goal), dtype=torch.float32)
+    local_goal_z = torch.full_like(robot_x, float(h_goal), dtype=torch.float32) + robot_height
 
-    heading_flat = torch.zeros_like(robot_x)
+    heading_flat = torch.full_like(robot_x, robot_heading)
     base_lin_vel_tensor = torch.tensor(base_lin_vel, device=device).repeat(num_points, 1)
     base_ang_vel_tensor = torch.tensor(base_ang_vel, device=device).repeat(num_points, 1)
     projected_gravity = torch.tensor([0.0, 0.0, -1.0], device=device).repeat(num_points, 1)
@@ -652,9 +653,9 @@ def main():
 
 def main_height_map():
     # Configure model and scan parameters
-    model_path = "logs/rsl_rl/EncoderActorCriticGO2/Stairs/CNN/model_5998_turn_180.pt"  # Update as needed
+    model_path = "logs/rsl_rl/EncoderActorCriticGO2/Stairs/CNN/model_9997_turn180.pt"  # Update as needed
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    global_goal_pos = [13.5, 6.0]
+    global_goal_pos = [2.0, 1.0]
     base_lin_vel = [0.0, 0.0, 0.0]
 
     # Height-map scan settings
@@ -717,22 +718,35 @@ def main_height_map():
     # )
 
      # Build 90-degree turning stairs scene as 3D boxes
-    stairs_scene = build_turning_stairs_90_scene3d(
-        center=(8.0, 0.0),
+    # stairs_scene = build_turning_stairs_90_scene3d(
+    #     center=(8.0, 0.0),
+    #     num_steps_run1=20,
+    #     num_steps_run2=20,
+    #     step_height=0.1,
+    #     step_width=0.3,
+    #     stairs_width=1.2,
+    #     landing_length=1.2,
+    #     landing_width=None,
+    #     turn_right=True,
+    #     base_z=0.0,
+    # )
+
+    stairs_scene = build_turning_stairs_180_scene3d(
+        center=(0.0, 0.0),
         num_steps_run1=20,
         num_steps_run2=20,
-        step_height=0.1,
-        step_width=0.3,
-        stairs_width=1.2,
-        landing_length=1.2,
+        step_height=0.05,
+        step_width=0.25,
+        stairs_width=2.0,
+        landing_length=2.0,
         landing_width=None,
-        turn_right=True,
+        run2_on_positive_x=True,
         base_z=0.0,
     )
 
     # World region to evaluate
-    x_min, x_max = 0.0, 20.0
-    y_min, y_max = -10.0, 10.0
+    x_min, x_max = -4.0, 4.0
+    y_min, y_max = -3.0, 7.0
 
     # Generate observations using the height-map scan
     observations, grid_info = generate_observations_height_map(
@@ -747,6 +761,7 @@ def main_height_map():
         height_scan_size=height_scan_size,
         height_scan_resolution=height_scan_resolution,
         robot_height=robot_height,
+        robot_heading=1.54,  # facing +y
         ordering=ordering,
         scene_items_3d=stairs_scene,
         hm_generator=None,   # let the function precompute the map

@@ -163,3 +163,95 @@ def build_turning_stairs_90_scene3d(
     scene3d.add_box((landing2_center[0], landing2_center[1], landing2_full_h * 0.5), (exit_len, exit_w, landing2_full_h))
 
     return scene3d
+
+
+def build_turning_stairs_180_scene3d(
+    center: tuple[float, float] = (8.0, 0.0),
+    num_steps_run1: int = 8,
+    num_steps_run2: int = 6,
+    step_height: float = 0.08,
+    step_width: float = 0.30,        # tread depth
+    stairs_width: float = 1.2,
+    landing_length: float = 1.2,
+    landing_width: float | None = None,
+    run2_on_positive_x: bool = True,
+    base_z: float = 0.0,
+) -> SceneItems3D:
+    """
+    Create a SceneItems3D with a 180-degree turning staircase (U-turn):
+    - Run 1 along +y from the entry edge
+    - Landing spanning both corridors
+    - Run 2 along -y (returning back) on a parallel corridor offset in x
+    - Second landing (exit) at the end
+    All steps and landings are axis-aligned boxes rising from ground_z=base_z.
+    
+    Args:
+        center: Starting center position (x, y)
+        num_steps_run1: Number of steps in first run
+        num_steps_run2: Number of steps in second run
+        step_height: Height of each step
+        step_width: Tread depth of each step
+        stairs_width: Width of the staircase corridor
+        landing_length: Length of landings in the direction of travel
+        landing_width: Width of landings (defaults to stairs_width)
+        run2_on_positive_x: If True, second run is offset in +x; else -x
+        base_z: Base z-coordinate for the terrain
+    """
+    scene3d = SceneItems3D()
+    cx0, cy0 = float(center[0]), float(center[1])
+
+    # Run 1 (+y)
+    run1_start = (cx0, cy0)
+    z1, run1_far, run1_len = _build_run_steps_3d(
+        scene3d,
+        start_xy=run1_start,
+        direction="y+",
+        base_z=base_z,
+        stairs_width=stairs_width,
+        num_steps=num_steps_run1,
+        step_h=step_height,
+        tread=step_width,
+    )
+
+    # Compute x shift for second corridor (+x or -x)
+    x_shift = stairs_width if run2_on_positive_x else -stairs_width
+
+    # Landing: centered halfway between the two corridor centerlines in x,
+    # and between run1_far and run1_far + landing_length in y
+    landing_th = max(step_height * 0.5, 0.02)
+    land_w = float(stairs_width if landing_width is None else landing_width)
+    landing_center = (run1_start[0] + 0.5 * x_shift, run1_far[1] + 0.5 * landing_length)
+    # Widen landing in x so it spans both corridor widths (land_w) plus the gap (abs(x_shift))
+    landing_full_h = z1 + landing_th
+    landing_dim_x = land_w + abs(x_shift)
+    scene3d.add_box(
+        (landing_center[0], landing_center[1], landing_full_h * 0.5),
+        (landing_dim_x, landing_length, landing_full_h)
+    )
+
+    # Run 2: along -y, starting at the far edge of the landing (in y), centered on the shifted corridor (in x)
+    run2_start = (run1_start[0] + x_shift, landing_center[1] - 0.5 * landing_length)
+    z2, run2_far, run2_len = _build_run_steps_3d(
+        scene3d,
+        start_xy=run2_start,
+        direction="y-",
+        base_z=landing_full_h,
+        stairs_width=stairs_width,
+        num_steps=num_steps_run2,
+        step_h=step_height,
+        tread=step_width,
+    )
+
+    # Landing 2 (exit landing) after run-2 toward -y
+    z_top2 = landing_full_h + z2
+    exit_len = landing_length
+    exit_w = land_w
+    # run2_far is the far edge of run2 along -y; exit landing spans [run2_far - exit_len, run2_far]
+    landing2_full_h = z_top2 + landing_th
+    landing2_center = (run2_start[0], run2_far[1] - 0.5 * exit_len)
+    scene3d.add_box(
+        (landing2_center[0], landing2_center[1], landing2_full_h * 0.5),
+        (exit_w, exit_len, landing2_full_h)
+    )
+
+    return scene3d
