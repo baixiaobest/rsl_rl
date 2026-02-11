@@ -125,6 +125,7 @@ def generate_observations_height_map(
     robot_height=0.4,
     robot_heading: float = 0.0,
     point_toward_goal=False,  # If True, heading points toward goal (overrides robot_heading)
+    heading_regions=None,  # List of dicts: [{"x_min": ..., "x_max": ..., "y_min": ..., "y_max": ..., "heading": ...}, ...]
     ordering="xy",  # "xy" (x-major) or "yx" (y-major)
     scene_items_3d=None,
     hm_generator=None,
@@ -173,6 +174,20 @@ def generate_observations_height_map(
         heading_flat = torch.atan2(local_goal_y, local_goal_x)
     else:
         heading_flat = torch.full_like(robot_x, robot_heading)
+    
+    # Apply region-specific heading overrides
+    if heading_regions is not None:
+        for region in heading_regions:
+            x_min_r = region["x_min"]
+            x_max_r = region["x_max"]
+            y_min_r = region["y_min"]
+            y_max_r = region["y_max"]
+            heading_r = region["heading"]
+            
+            # Find points within this region
+            mask = (robot_x >= x_min_r) & (robot_x <= x_max_r) & (robot_y >= y_min_r) & (robot_y <= y_max_r)
+            heading_flat[mask] = heading_r
+    
     base_lin_vel_tensor = torch.tensor(base_lin_vel, device=device).repeat(num_points, 1)
     base_ang_vel_tensor = torch.tensor(base_ang_vel, device=device).repeat(num_points, 1)
     projected_gravity = torch.tensor([0.0, 0.0, -1.0], device=device).repeat(num_points, 1)
@@ -450,14 +465,15 @@ def visualize_value_heatmap(values, grid_info, global_goal_pos=None, scene_items
         ax.plot(global_goal_pos[0], global_goal_pos[1], 'r*', markersize=15, label='Goal', zorder=15)
     
     # Add contour lines for better visualization
-    contour = ax.contour(x_coords, y_coords, values_grid.T, levels=contour_levels, colors='white', alpha=0.5)
-    ax.clabel(contour, inline=True, fontsize=8, fmt='%.2f')
-    
-    # Add labels and title
-    ax.set_xlabel('X Position')
-    ax.set_ylabel('Y Position')
-    ax.set_title(title)
-    ax.grid(True, linestyle='--', alpha=0.6)
+    if contour_levels != 0:
+        contour = ax.contour(x_coords, y_coords, values_grid.T, levels=contour_levels, colors='white', alpha=0.5)
+        ax.clabel(contour, inline=True, fontsize=8, fmt='%.2f')
+        
+        # Add labels and title
+        ax.set_xlabel('X Position')
+        ax.set_ylabel('Y Position')
+        ax.set_title(title)
+        ax.grid(True, linestyle='--', alpha=0.6)
     
     # Create legend if we have any labeled elements
     handles, labels = ax.get_legend_handles_labels()
@@ -761,13 +777,18 @@ def main_height_map():
     x_min, x_max = -4.0, 4.0
     y_min, y_max = -3.0, 7.0
 
+    heading_regions = [
+        {"x_min": -1.0, "x_max": 1.0, "y_min": 0.0, "y_max": 2.5, "heading": 0.5*np.pi},
+        {"x_min": 1.0, "x_max": 3.0, "y_min": 0.0, "y_max": 2.5, "heading": -0.5*np.pi},
+    ]
+
     # Generate observations using the height-map scan
     observations, grid_info = generate_observations_height_map(
         x_min=x_min,
         x_max=x_max,
         y_min=y_min,
         y_max=y_max,
-        res=0.05,
+        res=0.02,
         global_goal_pos=global_goal_pos,
         base_lin_vel=base_lin_vel,
         device=device,
@@ -775,7 +796,8 @@ def main_height_map():
         height_scan_resolution=height_scan_resolution,
         robot_height=robot_height,
         robot_heading=0.5*np.pi,
-        point_toward_goal=False,
+        point_toward_goal=True,
+        heading_regions=heading_regions,
         ordering=ordering,
         scene_items_3d=stairs_scene,
         hm_generator=None,   # let the function precompute the map
@@ -796,7 +818,7 @@ def main_height_map():
         title="Value Function (Height-Map Scan on Stairs)",
         save_path="value_function_heightmap_stairs_heatmap.png",
         show_plot=True,
-        contour_levels=20,
+        contour_levels=0,
         show_vector_field=False,
     )
 
