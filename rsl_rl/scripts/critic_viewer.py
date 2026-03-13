@@ -685,6 +685,7 @@ def main_height_map():
     model_path = "logs/rsl_rl/EncoderActorCriticGO2/Stairs/CNN/model_9997_turn180.pt"  # Update as needed
     device = "cuda" if torch.cuda.is_available() else "cpu"
     global_goal_pos = [2.0, -1.0]
+    # global_goal_pos = [2.0, 3.5]
     base_lin_vel = [0.0, 0.0, 0.0]
 
     # Height-map scan settings
@@ -774,13 +775,14 @@ def main_height_map():
     )
 
     # World region to evaluate
-    x_min, x_max = -4.0, 4.0
-    y_min, y_max = -3.0, 7.0
+    x_min, x_max = -2.0, 4.0
+    y_min, y_max = -3.0, 6.0
 
-    heading_regions = [
-        {"x_min": -1.0, "x_max": 1.0, "y_min": 0.0, "y_max": 2.5, "heading": 0.5*np.pi},
-        {"x_min": 1.0, "x_max": 3.0, "y_min": 0.0, "y_max": 2.5, "heading": -0.5*np.pi},
-    ]
+    # heading_regions = [
+    #     {"x_min": -1.0, "x_max": 1.0, "y_min": 0.0, "y_max": 2.5, "heading": 0.5*np.pi},
+    #     {"x_min": 1.0, "x_max": 3.0, "y_min": 0.0, "y_max": 2.5, "heading": -0.5*np.pi},
+    # ]
+    heading_regions = None
 
     # Generate observations using the height-map scan
     observations, grid_info = generate_observations_height_map(
@@ -796,7 +798,7 @@ def main_height_map():
         height_scan_resolution=height_scan_resolution,
         robot_height=robot_height,
         robot_heading=0.5*np.pi,
-        point_toward_goal=True,
+        point_toward_goal=False,
         heading_regions=heading_regions,
         ordering=ordering,
         scene_items_3d=stairs_scene,
@@ -820,6 +822,8 @@ def main_height_map():
         show_plot=True,
         contour_levels=0,
         show_vector_field=False,
+        vmin=-1.5, 
+        vmax=0.8
     )
 
     visualize_value_surface(
