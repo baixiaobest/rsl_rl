@@ -151,10 +151,20 @@ class LidarActorCritic(nn.Module):
         self.noise_clip = noise_clip
         self.noise_std_type = noise_std_type
 
-        # --- Shared lidar CNN (channels=2, height=H, width=fov_bins) ---
+        # Channel count is inferred from the obs size so the model adapts to the
+        # observation term's `include_validity` flag (2 channels = [dist, valid],
+        # 1 channel = dist only) without any further configuration.
+        if lidar_obs_size % (lidar_horizon * lidar_fov_bins) != 0:
+            raise ValueError(
+                f"lidar_obs_size ({lidar_obs_size}) is not divisible by "
+                f"lidar_horizon * lidar_fov_bins ({lidar_horizon} * {lidar_fov_bins})"
+            )
+        self.lidar_channels = lidar_obs_size // (lidar_horizon * lidar_fov_bins)
+
+        # --- Shared lidar CNN (channels=lidar_channels, height=H, width=fov_bins) ---
         self.lidar_cnn, lidar_latent_dim = _build_cnn(
             lidar_cnn_dims, activation_fn,
-            in_channels=2, height=lidar_horizon, width=lidar_fov_bins,
+            in_channels=self.lidar_channels, height=lidar_horizon, width=lidar_fov_bins,
         )
 
         # --- Other-obs MLP encoders (actor / critic may differ in size) ---
@@ -211,7 +221,7 @@ class LidarActorCritic(nn.Module):
     def _encode_lidar(self, lidar_flat: torch.Tensor) -> torch.Tensor:
         """Reshape flat lidar vector → (B, 2, H, fov_bins) and pass through CNN."""
         B = lidar_flat.shape[0]
-        lidar_2d = lidar_flat.view(B, 2, self.lidar_horizon, self.lidar_fov_bins)
+        lidar_2d = lidar_flat.view(B, self.lidar_channels, self.lidar_horizon, self.lidar_fov_bins)
         return self.lidar_cnn(lidar_2d)
 
     def _get_noise_std(self, mean: torch.Tensor) -> torch.Tensor:
