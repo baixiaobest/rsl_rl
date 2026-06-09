@@ -17,6 +17,7 @@ from rsl_rl.env import VecEnv
 from rsl_rl.modules import (
     ActorCritic,
     EncoderActorCritic,
+    LidarActorCritic,
     ActorCriticRecurrent,
     EmpiricalNormalization,
     StudentTeacher,
