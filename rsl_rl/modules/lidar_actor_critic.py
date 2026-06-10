@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from itertools import chain
 
 import torch
 import torch.nn as nn
@@ -86,6 +87,41 @@ def _build_mlp(input_dim: int, hidden_dims: list[int], output_dim: int,
     return nn.Sequential(*layers)
 
 
+def _build_deconv(layer_configs: list[dict], activation_fn: nn.Module,
+                  in_channels: int, width: int):
+    """Build a 1D upsampling (transposed-conv) network from a list of layer config dicts.
+
+    Mirrors :func:`_build_cnn` but with ``nn.ConvTranspose1d`` to *expand* the width back
+    up to the target arc resolution. Each layer dict accepts ``out_channels`` plus optional
+    ``in_channels``, ``kernel_size``, ``stride``, ``padding``, ``output_padding``,
+    ``dilation``. No activation is applied after the final layer (raw regression output).
+
+    Returns ``(nn.Sequential, out_channels, out_width)``.
+    """
+    layers: list[nn.Module] = []
+    c, w = in_channels, width
+    n = len(layer_configs)
+    for i, lc in enumerate(layer_configs):
+        ic = lc.get("in_channels", c)
+        oc = lc["out_channels"]
+        k = lc.get("kernel_size", 3)
+        s = lc.get("stride", 2)
+        p = lc.get("padding", 0)
+        op = lc.get("output_padding", 0)
+        d = lc.get("dilation", 1)
+        deconv = nn.ConvTranspose1d(ic, oc, k, stride=s, padding=p, output_padding=op, dilation=d)
+        nn.init.kaiming_uniform_(deconv.weight, nonlinearity="relu")
+        if deconv.bias is not None:
+            nn.init.constant_(deconv.bias, 0)
+        layers.append(deconv)
+        if i < n - 1:
+            layers.append(activation_fn)
+        # ConvTranspose1d output length formula
+        w = (w - 1) * s - 2 * p + d * (k - 1) + op + 1
+        c = oc
+    return nn.Sequential(*layers), c, w
+
+
 class LidarActorCritic(nn.Module):
     """Two-stream actor-critic for temporal lidar observations.
 
@@ -134,6 +170,10 @@ class LidarActorCritic(nn.Module):
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
         noise_clip: float = 1.0,
+        enable_prediction_head: bool = False,
+        pred_cnn_dims: list[dict] | None = None,
+        pred_cnn_input_width: int = 8,
+        pred_target_channels: int = 1,
         **kwargs,
     ):
         if kwargs:
@@ -191,11 +231,44 @@ class LidarActorCritic(nn.Module):
         # --- Critic MLP ---
         self.critic = _build_mlp(combined_critic_dim, list(critic_hidden_dims), 1, activation_fn)
 
+        # --- Optional next-frame lidar prediction head (world-model auxiliary task) ---
+        # Consumes the *lidar CNN latent only* (no proprioception) and upsamples it back
+        # to a single distance arc of width ``lidar_fov_bins``, so the shared CNN encoder
+        # is pressured to learn the scene's dynamics rather than shortcut via the known
+        # ego transform. Trained in a separate auxiliary phase in PPO.
+        self.enable_prediction_head = enable_prediction_head
+        if enable_prediction_head:
+            if not pred_cnn_dims:
+                raise ValueError("enable_prediction_head=True requires non-empty pred_cnn_dims")
+            pred_in_channels = pred_cnn_dims[0].get("in_channels")
+            if pred_in_channels is None:
+                raise ValueError("pred_cnn_dims[0] must specify 'in_channels' (initial channel count)")
+            self.pred_cnn_input_shape = (pred_in_channels, pred_cnn_input_width)
+            self.pred_mlp = _build_mlp(
+                lidar_latent_dim, [],
+                pred_in_channels * pred_cnn_input_width, activation_fn,
+            )
+            self.pred_deconv, pred_out_c, pred_out_w = _build_deconv(
+                pred_cnn_dims, activation_fn,
+                in_channels=pred_in_channels, width=pred_cnn_input_width,
+            )
+            if pred_out_c != pred_target_channels or pred_out_w != lidar_fov_bins:
+                raise ValueError(
+                    f"prediction head output ({pred_out_c}ch x {pred_out_w}) does not match "
+                    f"target ({pred_target_channels}ch x {lidar_fov_bins}). Adjust pred_cnn_dims "
+                    f"/ pred_cnn_input_width."
+                )
+            self.pred_target_channels = pred_target_channels
+            self.pred_target_size = pred_target_channels * lidar_fov_bins
+
         print(f"LidarActorCritic:")
         print(f"  lidar_cnn (output_dim={lidar_latent_dim}): {self.lidar_cnn}")
         print(f"  actor_other_mlp: {self.actor_other_mlp}")
         print(f"  actor: {self.actor}")
         print(f"  critic: {self.critic}")
+        if enable_prediction_head:
+            print(f"  pred_mlp: {self.pred_mlp}")
+            print(f"  pred_deconv (target={self.pred_target_size}): {self.pred_deconv}")
 
         # --- Action noise ---
         if noise_std_type == "scalar":
@@ -223,6 +296,13 @@ class LidarActorCritic(nn.Module):
         B = lidar_flat.shape[0]
         lidar_2d = lidar_flat.view(B, self.lidar_channels, self.lidar_horizon, self.lidar_fov_bins)
         return self.lidar_cnn(lidar_2d)
+
+    def _actor_latent(self, observations: torch.Tensor) -> torch.Tensor:
+        """Compute the combined actor latent (CNN lidar latent ⊕ MLP other latent)."""
+        other, lidar = self._split_obs(observations)
+        lidar_latent = self._encode_lidar(lidar)
+        other_latent = self.actor_other_mlp(other)
+        return torch.cat([lidar_latent, other_latent], dim=-1)
 
     def _get_noise_std(self, mean: torch.Tensor) -> torch.Tensor:
         if self.noise_std_type == "scalar":
@@ -254,10 +334,7 @@ class LidarActorCritic(nn.Module):
         return self.distribution.entropy().sum(dim=-1)
 
     def update_distribution(self, observations: torch.Tensor):
-        other, lidar = self._split_obs(observations)
-        lidar_latent = self._encode_lidar(lidar)
-        other_latent = self.actor_other_mlp(other)
-        mean = self.actor(torch.cat([lidar_latent, other_latent], dim=-1))
+        mean = self.actor(self._actor_latent(observations))
         std = self._get_noise_std(mean)
         self.distribution = Normal(mean, std)
 
@@ -269,10 +346,28 @@ class LidarActorCritic(nn.Module):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
     def act_inference(self, observations: torch.Tensor) -> torch.Tensor:
-        other, lidar = self._split_obs(observations)
+        return self.actor(self._actor_latent(observations))
+
+    def predict_next(self, observations: torch.Tensor) -> torch.Tensor:
+        """Predict the next-step lidar distance arc from the lidar CNN latent only.
+
+        Returns ``(B, pred_target_channels * fov_bins)`` to match the stored prediction
+        target layout.
+        """
+        _, lidar = self._split_obs(observations)
         lidar_latent = self._encode_lidar(lidar)
-        other_latent = self.actor_other_mlp(other)
-        return self.actor(torch.cat([lidar_latent, other_latent], dim=-1))
+        x = self.pred_mlp(lidar_latent)
+        x = x.view(x.shape[0], *self.pred_cnn_input_shape)
+        x = self.pred_deconv(x)  # (B, C, fov_bins)
+        return x.reshape(x.shape[0], -1)
+
+    def prediction_parameters(self):
+        """Parameters trained by the auxiliary prediction phase: shared encoder + head."""
+        return chain(
+            self.lidar_cnn.parameters(),
+            self.pred_mlp.parameters(),
+            self.pred_deconv.parameters(),
+        )
 
     def evaluate(self, critic_observations: torch.Tensor, **kwargs) -> torch.Tensor:
         other, lidar = self._split_obs(critic_observations)

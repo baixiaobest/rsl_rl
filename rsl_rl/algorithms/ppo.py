@@ -43,6 +43,8 @@ class PPO:
         rnd_cfg: dict | None = None,
         # Symmetry parameters
         symmetry_cfg: dict | None = None,
+        # Auxiliary lidar prediction head parameters
+        lidar_prediction_cfg: dict | None = None,
         # Distributed training parameters
         multi_gpu_cfg: dict | None = None,
     ):
@@ -94,6 +96,16 @@ class PPO:
         self.policy.to(self.device)
         # Create optimizer
         self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
+
+        # Auxiliary lidar prediction head components
+        if lidar_prediction_cfg is not None and getattr(self.policy, "enable_prediction_head", False):
+            self.lidar_prediction = lidar_prediction_cfg
+            self.pred_optimizer = optim.Adam(
+                self.policy.prediction_parameters(), lr=lidar_prediction_cfg["learning_rate"]
+            )
+        else:
+            self.lidar_prediction = None
+            self.pred_optimizer = None
         # Create rollout storage
         self.storage: RolloutStorage = None  # type: ignore
         self.transition = RolloutStorage.Transition()
@@ -121,6 +133,11 @@ class PPO:
             rnd_state_shape = [self.rnd.num_states]
         else:
             rnd_state_shape = None
+        # create memory for the auxiliary lidar prediction target (derived from the policy)
+        if self.lidar_prediction:
+            pred_target_shape = [self.policy.pred_target_size]
+        else:
+            pred_target_shape = None
         # create rollout storage
         self.storage = RolloutStorage(
             training_type,
@@ -130,6 +147,7 @@ class PPO:
             critic_obs_shape,
             actions_shape,
             rnd_state_shape,
+            pred_target_shape,
             self.device,
         )
 
@@ -165,6 +183,10 @@ class PPO:
             # Record the curiosity gates
             self.transition.rnd_state = rnd_state.clone()
 
+        # Record the auxiliary lidar prediction target (next-frame, ego-aligned)
+        if self.lidar_prediction:
+            self.transition.pred_target = infos["observations"]["prediction"].to(self.device)
+
         # Bootstrapping on time outs
         if "time_outs" in infos:
             self.transition.rewards += self.gamma * torch.squeeze(
@@ -197,6 +219,11 @@ class PPO:
             mean_symmetry_loss = 0
         else:
             mean_symmetry_loss = None
+        # -- Lidar prediction loss
+        if self.lidar_prediction:
+            mean_pred_loss = 0
+        else:
+            mean_pred_loss = None
 
         # generator for mini batches
         if self.policy.is_recurrent:
@@ -410,6 +437,26 @@ class PPO:
         # -- For Symmetry
         if mean_symmetry_loss is not None:
             mean_symmetry_loss /= num_updates
+
+        # Auxiliary next-frame lidar prediction phase (separate optimizer, own iterations/batch).
+        # Trains the shared lidar encoder + prediction head on (obs, next-frame-target) pairs.
+        if self.lidar_prediction:
+            num_pred_updates = 0
+            for obs_batch, target_batch in self.storage.prediction_mini_batch_generator(
+                self.lidar_prediction["batch_size"], self.lidar_prediction["num_iterations"]
+            ):
+                pred = self.policy.predict_next(obs_batch)
+                pred_loss = torch.nn.functional.mse_loss(pred, target_batch) * self.lidar_prediction["weight"]
+
+                self.pred_optimizer.zero_grad()
+                pred_loss.backward()
+                nn.utils.clip_grad_norm_(self.policy.prediction_parameters(), self.max_grad_norm)
+                self.pred_optimizer.step()
+
+                mean_pred_loss += pred_loss.item()
+                num_pred_updates += 1
+            mean_pred_loss /= max(num_pred_updates, 1)
+
         # -- Clear the storage
         self.storage.clear()
 
@@ -423,6 +470,8 @@ class PPO:
             loss_dict["rnd"] = mean_rnd_loss
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
+        if self.lidar_prediction:
+            loss_dict["lidar_prediction"] = mean_pred_loss
 
         return loss_dict
 

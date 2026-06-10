@@ -71,7 +71,7 @@ class OnPolicyRunner:
 
         # evaluate the policy class
         policy_class = eval(self.policy_cfg.pop("class_name"))
-        policy: ActorCritic | EncoderActorCritic | ActorCriticRecurrent | StudentTeacher | StudentTeacherRecurrent = policy_class(
+        policy: ActorCritic | EncoderActorCritic | LidarActorCritic | ActorCriticRecurrent | StudentTeacher | StudentTeacherRecurrent = policy_class(
             num_obs, num_privileged_obs, self.env.num_actions, **self.policy_cfg
         ).to(self.device)
 
@@ -411,6 +411,10 @@ class OnPolicyRunner:
             saved_dict["rnd_state_dict"] = self.alg.rnd.state_dict()
             saved_dict["rnd_optimizer_state_dict"] = self.alg.rnd_optimizer.state_dict()
 
+        # -- Save auxiliary lidar prediction optimizer if used
+        if getattr(self.alg, "lidar_prediction", None):
+            saved_dict["pred_optimizer_state_dict"] = self.alg.pred_optimizer.state_dict()
+
         # -- Save observation normalizer if used
         if self.empirical_normalization:
             saved_dict["obs_norm_state_dict"] = self.obs_normalizer.state_dict()
@@ -460,6 +464,9 @@ class OnPolicyRunner:
             # -- RND optimizer if used
             if self.alg.rnd and not self.cfg['disable_rnd_load']:
                 self.alg.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
+            # -- auxiliary lidar prediction optimizer if used
+            if getattr(self.alg, "lidar_prediction", None) and "pred_optimizer_state_dict" in loaded_dict:
+                self.alg.pred_optimizer.load_state_dict(loaded_dict["pred_optimizer_state_dict"])
         # -- load current learning iteration
         if resumed_training:
             self.current_learning_iteration = loaded_dict["iter"]

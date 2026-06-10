@@ -25,6 +25,7 @@ class RolloutStorage:
             self.action_sigma = None
             self.hidden_states = None
             self.rnd_state = None
+            self.pred_target = None
 
         def clear(self):
             self.__init__()
@@ -38,6 +39,7 @@ class RolloutStorage:
         privileged_obs_shape,
         actions_shape,
         rnd_state_shape=None,
+        pred_target_shape=None,
         device="cpu",
     ):
         # store inputs
@@ -48,6 +50,7 @@ class RolloutStorage:
         self.obs_shape = obs_shape
         self.privileged_obs_shape = privileged_obs_shape
         self.rnd_state_shape = rnd_state_shape
+        self.pred_target_shape = pred_target_shape
         self.actions_shape = actions_shape
 
         # Core
@@ -78,6 +81,12 @@ class RolloutStorage:
         # For RND
         if rnd_state_shape is not None:
             self.rnd_state = torch.zeros(num_transitions_per_env, num_envs, *rnd_state_shape, device=self.device)
+
+        # For the auxiliary lidar prediction head
+        if pred_target_shape is not None:
+            self.pred_target = torch.zeros(
+                num_transitions_per_env, num_envs, *pred_target_shape, device=self.device
+            )
 
         # For RNN networks
         self.saved_hidden_states_a = None
@@ -113,6 +122,10 @@ class RolloutStorage:
         # For RND
         if self.rnd_state_shape is not None:
             self.rnd_state[self.step].copy_(transition.rnd_state)
+
+        # For the auxiliary lidar prediction head
+        if self.pred_target_shape is not None:
+            self.pred_target[self.step].copy_(transition.pred_target)
 
         # For RNN networks
         self._save_hidden_states(transition.hidden_states)
@@ -241,6 +254,36 @@ class RolloutStorage:
                     None,
                     None,
                 ), None, rnd_state_batch
+
+    # for the auxiliary next-frame lidar prediction head
+    def prediction_mini_batch_generator(self, batch_size, num_iterations):
+        """Yield ``(obs_batch, target_batch)`` pairs for next-frame lidar prediction.
+
+        Storage is already aligned: ``observations[k]`` is the obs the action at step ``k``
+        was computed from (ego-``k`` frame), while ``pred_target[k]`` is captured from the
+        post-step infos and equals ``scan@(k+1)`` reprojected into ``pose@k`` — the next
+        lidar frame in the *same* ego-``k`` frame. Rows where the episode ended at ``k``
+        (``dones[k] == 1``) hold a reset/zero target and are masked out. Yields
+        ``num_iterations`` randomly-sampled minibatches of size ``batch_size``.
+        """
+        if self.pred_target_shape is None:
+            raise ValueError("prediction_mini_batch_generator requires pred_target storage.")
+
+        obs = self.observations.flatten(0, 1)                 # (T*N, obs_dim)
+        target = self.pred_target.flatten(0, 1)               # (T*N, target_dim)
+        valid = (self.dones == 0).flatten(0, 1).squeeze(-1)   # (T*N,)
+        valid_idx = valid.nonzero(as_tuple=False).squeeze(-1)
+
+        num_valid = valid_idx.numel()
+        if num_valid == 0:
+            return
+        obs = obs[valid_idx]
+        target = target[valid_idx]
+
+        for _ in range(num_iterations):
+            # sample with replacement (independent minibatches)
+            sel = torch.randint(0, num_valid, (min(batch_size, num_valid),), device=self.device)
+            yield obs[sel], target[sel]
 
     # for reinfrocement learning with recurrent networks
     def recurrent_mini_batch_generator(self, num_mini_batches, num_epochs=8):

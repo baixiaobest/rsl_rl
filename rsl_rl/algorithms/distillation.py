@@ -78,6 +78,7 @@ class Distillation:
             teacher_obs_shape,
             actions_shape,
             None,
+            None,
             self.device,
         )
 
