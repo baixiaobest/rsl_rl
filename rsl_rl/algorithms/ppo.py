@@ -446,7 +446,14 @@ class PPO:
                 self.lidar_prediction["batch_size"], self.lidar_prediction["num_iterations"]
             ):
                 pred = self.policy.predict_next(obs_batch)
-                pred_loss = torch.nn.functional.mse_loss(pred, target_batch) * self.lidar_prediction["weight"]
+                sigma = self.lidar_prediction.get("distance_weight_sigma")
+                if sigma is not None:
+                    # emphasize near-field accuracy: weight -> 1 as target distance d -> 0,
+                    # weight -> 0 as d -> inf (free space / far obstacles)
+                    weight = 1.0 - torch.tanh(target_batch / sigma)
+                    pred_loss = (weight * (pred - target_batch).pow(2)).mean() * self.lidar_prediction["weight"]
+                else:
+                    pred_loss = torch.nn.functional.mse_loss(pred, target_batch) * self.lidar_prediction["weight"]
 
                 self.pred_optimizer.zero_grad()
                 pred_loss.backward()
