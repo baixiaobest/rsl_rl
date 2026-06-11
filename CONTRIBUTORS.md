@@ -17,22 +17,29 @@ Please keep the lists sorted alphabetically.
 
 ---
 
-* Mayank Mittal
 * Clemens Schwarke
+* Mayank Mittal
 
 ## Authors
 
+* Clemens Schwarke
 * David Hoeller
+* Mayank Mittal
 * Nikita Rudin
 
 ## Contributors
 
 * Bikram Pandit
+* Emilio Palma
 * Eric Vollenweider
 * Fabian Jenelten
 * Lorenzo Terenzi
 * Marko Bjelonic
+* Markus Portugall
+* Masahiro Kubota
 * Matthijs van der Boon
+* Özhan Özen
 * Pascal Roth
+* Shaoshu Su
 * Zhang Chong
 * Ziqi Fan
