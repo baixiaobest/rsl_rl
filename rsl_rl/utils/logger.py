@@ -191,9 +191,9 @@ class Logger:
                             continue
                         if not isinstance(ep_info[key], torch.Tensor):
                             ep_info[key] = torch.Tensor([ep_info[key]])
-                        if len(ep_info[key].shape) == 0:
-                            ep_info[key] = ep_info[key].unsqueeze(0)
-                        infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
+                        # Flatten so scalar (0-d) and multi-dim tensors (e.g. the (N, 1)
+                        # index tensors from torch.nonzero) can be concatenated with infotensor.
+                        infotensor = torch.cat((infotensor, ep_info[key].reshape(-1).to(self.device)))
                     value = torch.mean(infotensor)
                     if "/" in key:
                         self.writer.add_scalar(key, value, it)  # type: ignore
