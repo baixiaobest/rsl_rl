@@ -198,9 +198,12 @@ class LidarModel(MLPModel):
         lidar_cnn = cnn_dict["lidar"]
 
         # Flattened CNN latent size (works for both freshly built and shared encoders).
+        # When the CNN is shared from an already-relocated actor, its parameters may live on a
+        # non-CPU device, so the probe tensor must match.
+        probe_device = next(lidar_cnn.parameters()).device
         with torch.no_grad():
             lidar_latent_dim = int(
-                lidar_cnn(torch.zeros(1, lidar_channels, lidar_horizon, lidar_fov_bins)).shape[-1]
+                lidar_cnn(torch.zeros(1, lidar_channels, lidar_horizon, lidar_fov_bins, device=probe_device)).shape[-1]
             )
 
         # Build the optional "other observation" encoder.
