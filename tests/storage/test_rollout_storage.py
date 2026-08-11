@@ -116,6 +116,45 @@ class TestMiniBatchGenerator:
             )
 
 
+class TestPredictionMiniBatchGenerator:
+    """Event-aware target sampling for asynchronous lidar observations."""
+
+    def test_validity_group_excludes_held_scans_and_episode_boundaries(self) -> None:
+        num_envs, num_steps = 2, 5
+        obs = TensorDict(
+            {
+                "policy": torch.zeros(num_envs, OBS_DIM),
+                "prediction": torch.zeros(num_envs, 1),
+                "prediction_mask": torch.zeros(num_envs, 1),
+            },
+            batch_size=[num_envs],
+        )
+        storage = RolloutStorage("rl", num_envs, num_steps, obs, [NUM_ACTIONS])
+
+        # The target at a step is identifiable by its timestep and env id.  New
+        # completed scans exist only at t=1 and t=3; the t=3 target for env 0 is
+        # additionally invalid because its source transition terminates at t=2.
+        for t in range(num_steps):
+            storage.observations["policy"][t, :, 0] = t
+            storage.observations["prediction"][t, :, 0] = 10 * t + torch.arange(num_envs)
+        storage.observations["prediction_mask"][1, :, 0] = 1.0
+        storage.observations["prediction_mask"][3, :, 0] = 1.0
+        storage.dones[2, 0, 0] = 1
+
+        batches = list(
+            storage.prediction_mini_batch_generator(
+                batch_size=16,
+                num_iterations=1,
+                validity_group="prediction_mask",
+            )
+        )
+        targets = torch.cat([target for _obs, target in batches], dim=0).squeeze(-1)
+
+        # t=1 for both envs and t=3 only for env 1 remain.  Held frames, reset
+        # boundaries, and t=3/env0 must not contribute to the auxiliary loss.
+        assert torch.equal(torch.sort(targets).values, torch.tensor([10.0, 11.0, 31.0]))
+
+
 class TestRecurrentMiniBatchGenerator:
     """Tests for ``recurrent_mini_batch_generator`` — trajectory counting, env/trajectory alignment."""
 

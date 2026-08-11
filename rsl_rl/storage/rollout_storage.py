@@ -259,7 +259,11 @@ class RolloutStorage:
 
     # For the auxiliary next-frame lidar prediction head
     def prediction_mini_batch_generator(
-        self, batch_size: int, num_iterations: int, target_group: str = "prediction"
+        self,
+        batch_size: int,
+        num_iterations: int,
+        target_group: str = "prediction",
+        validity_group: str | None = None,
     ) -> Generator[tuple[TensorDict, torch.Tensor], None, None]:
         """Yield ``(obs_batch, target_batch)`` pairs for next-frame lidar prediction.
 
@@ -273,12 +277,17 @@ class RolloutStorage:
         """
         if target_group not in self.observations.keys():
             raise ValueError(f"prediction_mini_batch_generator requires the '{target_group}' observation group.")
+        if validity_group is not None and validity_group not in self.observations.keys():
+            raise ValueError(f"prediction_mini_batch_generator requires the '{validity_group}' observation group.")
 
         # obs at step k (rows 0..T-2) paired with the target at step k+1
         obs = self.observations[:-1].flatten(0, 1)
         target = self.observations[target_group][1:].flatten(0, 1)
         # keep only steps whose next step is in the same episode
         valid = (self.dones[:-1] == 0).flatten(0, 1).squeeze(-1)
+        if validity_group is not None:
+            target_valid = self.observations[validity_group][1:].flatten(0, 1).squeeze(-1) > 0.5
+            valid &= target_valid
         valid_idx = valid.nonzero(as_tuple=False).squeeze(-1)
 
         num_valid = valid_idx.numel()

@@ -346,7 +346,9 @@ class PPO:
         if self.lidar_prediction:
             num_pred_updates = 0
             for obs_batch, target_batch in self.storage.prediction_mini_batch_generator(
-                self.lidar_prediction["batch_size"], self.lidar_prediction["num_iterations"]
+                self.lidar_prediction["batch_size"],
+                self.lidar_prediction["num_iterations"],
+                validity_group=self.lidar_prediction.get("validity_group"),
             ):
                 pred = self._raw_actor.predict_next(obs_batch)
                 sigma = self.lidar_prediction.get("distance_weight_sigma")
