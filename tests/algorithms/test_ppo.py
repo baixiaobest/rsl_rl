@@ -11,7 +11,7 @@ import torch
 from tensordict import TensorDict
 
 from rsl_rl.algorithms.ppo import PPO
-from rsl_rl.models import MLPModel
+from rsl_rl.models import LidarModel, MLPModel
 from rsl_rl.storage import RolloutStorage
 from tests.conftest import make_obs
 
@@ -63,6 +63,50 @@ def _build_ppo(**overrides: object) -> tuple[PPO, TensorDict]:
     defaults.update(overrides)
     ppo = PPO(actor, critic, storage, **defaults)
     return ppo, obs
+
+
+class _LidarTestEnv:
+    """Minimal VecEnv surface needed by ``PPO.construct_algorithm``."""
+
+    num_envs = 2
+    num_actions = 2
+
+
+def test_construct_algorithm_shares_lidar_cnn_encoder() -> None:
+    """The algorithm factory must pass the actor lidar CNN to the critic."""
+    lidar_obs_size = 8  # 2 channels × 2 history frames × 2 FOV bins
+    obs = TensorDict(
+        {
+            "policy": torch.randn(2, 1 + lidar_obs_size),
+            "critic": torch.randn(2, 1 + lidar_obs_size),
+        },
+        batch_size=[2],
+    )
+    lidar_model = {
+        "class_name": LidarModel,
+        "hidden_dims": [4],
+        "activation": "elu",
+        "lidar_obs_size": lidar_obs_size,
+        "lidar_horizon": 2,
+        "lidar_fov_bins": 2,
+        "lidar_cnn_dims": [{"type": "conv", "out_channels": 2, "kernel_size": 1}],
+        "other_mlp_dims": [2],
+    }
+    cfg = {
+        "algorithm": {"class_name": PPO, "share_cnn_encoders": True},
+        "actor": {
+            **lidar_model,
+            "distribution_cfg": {"class_name": "GaussianDistribution", "init_std": 1.0, "std_type": "scalar"},
+        },
+        "critic": {**lidar_model, "distribution_cfg": None},
+        "obs_groups": {"actor": ["policy"], "critic": ["critic"]},
+        "num_steps_per_env": 2,
+        "multi_gpu": None,
+    }
+
+    ppo = PPO.construct_algorithm(obs, _LidarTestEnv(), cfg, "cpu")
+
+    assert ppo._raw_actor.cnns["lidar"] is ppo._raw_critic.cnns["lidar"]
 
 
 class TestGAEComputation:
