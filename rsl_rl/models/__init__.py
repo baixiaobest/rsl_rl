@@ -10,6 +10,7 @@ from .encoder_model import EncoderModel
 from .lidar_model import LidarModel
 from .mlp_model import MLPModel
 from .rnn_model import RNNModel
+from .temporal_occupancy_model import TemporalOccupancyModel
 
 __all__ = [
     "CNNModel",
@@ -17,4 +18,5 @@ __all__ = [
     "LidarModel",
     "MLPModel",
     "RNNModel",
+    "TemporalOccupancyModel",
 ]
