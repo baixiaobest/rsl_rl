@@ -109,6 +109,51 @@ def test_construct_algorithm_shares_lidar_cnn_encoder() -> None:
     assert ppo._raw_actor.cnns["lidar"] is ppo._raw_critic.cnns["lidar"]
 
 
+def test_shared_lidar_cnn_constructor_does_not_run_a_probe() -> None:
+    """A shared encoder may already be on CUDA, so construction must not execute it."""
+    lidar_obs_size = 8  # 2 channels × 2 history frames × 2 FOV bins
+    obs = TensorDict(
+        {
+            "policy": torch.randn(2, 1 + lidar_obs_size),
+            "critic": torch.randn(2, 1 + lidar_obs_size),
+        },
+        batch_size=[2],
+    )
+    model_kwargs = {
+        "hidden_dims": [4],
+        "activation": "elu",
+        "lidar_obs_size": lidar_obs_size,
+        "lidar_horizon": 2,
+        "lidar_fov_bins": 2,
+        "lidar_cnn_dims": [{"type": "conv", "out_channels": 2, "kernel_size": 1}],
+        "other_mlp_dims": [2],
+    }
+    actor = LidarModel(
+        obs,
+        {"actor": ["policy"], "critic": ["critic"]},
+        "actor",
+        2,
+        distribution_cfg={"class_name": "GaussianDistribution", "init_std": 1.0, "std_type": "scalar"},
+        **model_kwargs,
+    )
+
+    def forbid_probe(*args: object, **kwargs: object) -> torch.Tensor:
+        raise AssertionError("LidarModel construction must not execute the shared CNN")
+
+    actor.cnns["lidar"].forward = forbid_probe  # type: ignore[method-assign]
+    critic = LidarModel(
+        obs,
+        {"actor": ["policy"], "critic": ["critic"]},
+        "critic",
+        1,
+        distribution_cfg=None,
+        cnns=actor.cnns,
+        **model_kwargs,
+    )
+
+    assert critic.lidar_latent_dim == actor.lidar_latent_dim
+
+
 class TestGAEComputation:
     """Tests for generalized advantage estimation in ``compute_returns``."""
 

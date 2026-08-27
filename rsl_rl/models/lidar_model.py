@@ -190,21 +190,31 @@ class LidarModel(MLPModel):
             if set(cnns.keys()) != {"lidar"}:
                 raise ValueError("Shared CNN encoders for LidarModel must contain exactly the 'lidar' encoder.")
             cnn_dict: nn.ModuleDict | dict[str, nn.Module] = cnns
+            lidar_latent_dim = getattr(cnn_dict["lidar"], "_rsl_lidar_latent_dim", None)
+            if lidar_latent_dim is None:
+                # Compatibility with encoders made before the cached dimension was added.  The
+                # configuration describes the encoder shape, so calculate it without executing
+                # a convolution.  In particular, do not make model construction depend on
+                # cuDNN being initialized just because the actor has already moved this shared
+                # encoder to the evaluation device.
+                if not lidar_cnn_dims:
+                    raise ValueError(
+                        "lidar_cnn_dims must be provided when a shared lidar encoder does not carry its output size."
+                    )
+                _, lidar_latent_dim = _build_cnn(
+                    lidar_cnn_dims, activation_fn, lidar_channels, lidar_horizon, lidar_fov_bins
+                )
+                setattr(cnn_dict["lidar"], "_rsl_lidar_latent_dim", lidar_latent_dim)
         else:
             if not lidar_cnn_dims:
                 raise ValueError("lidar_cnn_dims must be provided when the CNN encoder is not shared.")
-            cnn, _ = _build_cnn(lidar_cnn_dims, activation_fn, lidar_channels, lidar_horizon, lidar_fov_bins)
-            cnn_dict = {"lidar": cnn}
-        lidar_cnn = cnn_dict["lidar"]
-
-        # Flattened CNN latent size (works for both freshly built and shared encoders).
-        # When the CNN is shared from an already-relocated actor, its parameters may live on a
-        # non-CPU device, so the probe tensor must match.
-        probe_device = next(lidar_cnn.parameters()).device
-        with torch.no_grad():
-            lidar_latent_dim = int(
-                lidar_cnn(torch.zeros(1, lidar_channels, lidar_horizon, lidar_fov_bins, device=probe_device)).shape[-1]
+            cnn, lidar_latent_dim = _build_cnn(
+                lidar_cnn_dims, activation_fn, lidar_channels, lidar_horizon, lidar_fov_bins
             )
+            # Keep the shape with the shared module so the critic does not need a probe pass
+            # after the actor (and therefore this CNN) has been moved to CUDA.
+            setattr(cnn, "_rsl_lidar_latent_dim", lidar_latent_dim)
+            cnn_dict = {"lidar": cnn}
 
         # Build the optional "other observation" encoder.
         other_size = obs_dim - lidar_obs_size
